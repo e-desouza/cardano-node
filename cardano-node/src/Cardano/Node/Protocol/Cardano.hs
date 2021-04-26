@@ -242,7 +242,6 @@ mkSomeConsensusProtocolCardano NodeByronProtocolConfiguration {
                Just epochNo -> Consensus.TriggerHardForkAtEpoch epochNo
         }
 
-
 ------------------------------------------------------------------------------
 -- Errors
 --

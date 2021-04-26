@@ -70,8 +70,8 @@ import           Numeric.Natural
 
 import           Control.Monad
 
-import           Data.Aeson (FromJSON (..), ToJSON (..), object, withObject,
-                   withText, (.!=), (.:), (.:?), (.=))
+import           Data.Aeson (FromJSON (..), ToJSON (..), object, withObject, withText, (.!=), (.:),
+                   (.:?), (.=))
 import qualified Data.Aeson as Aeson
 
 import qualified Cardano.Binary as CBOR

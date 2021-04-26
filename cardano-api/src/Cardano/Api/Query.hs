@@ -62,10 +62,10 @@ import qualified Ouroboros.Consensus.HardFork.Combinator.Degenerate as Consensus
 import qualified Ouroboros.Consensus.HardFork.History as History
 import qualified Ouroboros.Consensus.HardFork.History.Qry as Qry
 
-import qualified Ouroboros.Consensus.Ledger.Query as Consensus
 import qualified Ouroboros.Consensus.Byron.Ledger as Consensus
 import           Ouroboros.Consensus.Cardano.Block (StandardCrypto)
 import qualified Ouroboros.Consensus.Cardano.Block as Consensus
+import qualified Ouroboros.Consensus.Ledger.Query as Consensus
 import qualified Ouroboros.Consensus.Shelley.Ledger as Consensus
 import           Ouroboros.Network.Block (Serialised)
 
