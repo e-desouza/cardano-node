@@ -99,6 +99,7 @@ import           Data.Aeson (Value (..), object, (.:), (.=))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Encoding as Aeson
 import qualified Data.Aeson.Types as Aeson
+import qualified Data.Aeson.Encoding as Aeson
 import qualified Data.Sequence.Strict as Seq
 import           Data.Vector (Vector)
 import qualified Data.Vector as Vector
