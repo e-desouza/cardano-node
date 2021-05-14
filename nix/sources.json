@@ -29,22 +29,22 @@
         "homepage": "https://input-output-hk.github.io/haskell.nix",
         "owner": "input-output-hk",
         "repo": "haskell.nix",
-        "rev": "962ecfed3a4fb656b5a91d89159291e00ed766bc",
-        "sha256": "1avhrr9yp6wx586358602dghghi6w4phl94n1nikjlz22i2fqr3c",
+        "rev": "648e46ba3a235520f8be2f23bd6dda22525c61a1",
+        "sha256": "0ks23n9am4vsqsqjl5p98pbh6fb4n4q3lm11qy8j6mpbvg5r6x8b",
         "type": "tarball",
-        "url": "https://github.com/input-output-hk/haskell.nix/archive/962ecfed3a4fb656b5a91d89159291e00ed766bc.tar.gz",
+        "url": "https://github.com/input-output-hk/haskell.nix/archive/648e46ba3a235520f8be2f23bd6dda22525c61a1.tar.gz",
         "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
     },
     "iohk-nix": {
-        "branch": "master",
+        "branch": "p2p",
         "description": "nix scripts shared across projects",
         "homepage": null,
         "owner": "input-output-hk",
         "repo": "iohk-nix",
-        "rev": "bc4216c5b0e14dbde5541763f4952f99c3c712fa",
-        "sha256": "0y5n3limj5dg1vgxyxafg0ky35qq7w97rr00gr3yl16xx5jrhs6w",
+        "rev": "3e1e197862b0162054c9f5914ce2d37dd3940e86",
+        "sha256": "1m776l59xj39zih4d4grn2wwsaqy4w5hnqk5bhx0r59wdd6ykw3f",
         "type": "tarball",
-        "url": "https://github.com/input-output-hk/iohk-nix/archive/bc4216c5b0e14dbde5541763f4952f99c3c712fa.tar.gz",
+        "url": "https://github.com/input-output-hk/iohk-nix/archive/3e1e197862b0162054c9f5914ce2d37dd3940e86.tar.gz",
         "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
     }
 }

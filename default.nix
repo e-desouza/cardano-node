@@ -42,7 +42,7 @@ let
 
   rewrite-static = _: p: if (pkgs.stdenv.hostPlatform.isDarwin) then
     pkgs.runCommandCC p.name {
-      nativeBuildInputs = [ pkgs.haskellBuildUtils.package pkgs.buildPackages.binutils pkgs.buildPackages.nix ];
+      nativeBuildInputs = [ pkgs.haskellBuildUtils pkgs.buildPackages.binutils pkgs.buildPackages.nix ];
     } ''
       cp -R ${p} $out
       chmod -R +w $out
