@@ -19,6 +19,7 @@ import           Cardano.Prelude hiding (show)
 import           Prelude (String, show)
 
 import           Control.Monad.Class.MonadTime (DiffTime, Time (..))
+import qualified Data.Aeson as Aeson
 import qualified Data.Set as Set
 import           Data.Text (pack)
 
@@ -43,6 +44,7 @@ import           Ouroboros.Network.BlockFetch.ClientState (TraceFetchClientState
 import qualified Ouroboros.Network.BlockFetch.ClientState as BlockFetch
 import           Ouroboros.Network.BlockFetch.Decision (FetchDecision, FetchDecline (..))
 import           Ouroboros.Network.ConnectionId (ConnectionId (..))
+import           Ouroboros.Network.ConnectionManager.Types (AbstractState (..))
 import           Ouroboros.Network.Codec (AnyMessageAndAgency (..))
 import           Ouroboros.Network.DeltaQ (GSV (..), PeerGSV (..))
 import           Ouroboros.Network.KeepAlive (TraceKeepAliveClient (..))
@@ -431,6 +433,7 @@ instance HasSeverityAnnotation (ConnectionManagerTrace addr (ConnectionHandlerTr
       TrConnectionTimeWait {}       -> Debug
       TrConnectionTimeWaitDone {}   -> Debug
       TrConnectionManagerCounters {} -> Info
+      TrState {}                    -> Debug
 
 instance HasPrivacyAnnotation (ServerTrace addr)
 instance HasSeverityAnnotation (ServerTrace addr) where
@@ -600,7 +603,9 @@ instance Transformable Text IO PeerSelectionCounters where
 instance HasTextFormatter PeerSelectionCounters where
   formatText a _ = pack (show a)
 
-instance (Show addr, Show versionNumber, Show agreedOptions, ToObject addr)
+instance (Show addr, Show versionNumber, Show agreedOptions, ToObject addr,
+          Aeson.ToJSONKey addr
+         )
       => Transformable Text IO (ConnectionManagerTrace
                                  addr
                                  (ConnectionHandlerTrace versionNumber agreedOptions)) where
@@ -922,9 +927,13 @@ instance ToObject NtN.HandshakeTr where
 
 
 instance ToObject LocalAddress where
-    toObject _verb (LocalAddress path) =
-      mkObject [ "path" .= String (pack path) ]
+    toObject _verb addr =
+      mkObject [ "path" .= toJSON addr ]
 
+instance ToJSON LocalAddress where
+    toJSON (LocalAddress path) = String (pack path)
+
+instance Aeson.ToJSONKey LocalAddress where
 
 instance ToObject NtN.AcceptConnectionsPolicyTrace where
   toObject _verb (NtN.ServerTraceAcceptConnectionRateLimiting delay numOfConnections) =
@@ -1030,8 +1039,12 @@ instance ToObject (TraceTxSubmissionInbound txid tx) where
 -- TODO: ouroboros-network should provide a newtype wrapper for 'SockAddr'.
 instance ToObject Socket.SockAddr where
     toObject _verb sockAddr =
-      mkObject [ "sockAddr" .= String (pack $ show sockAddr) ]
+      mkObject [ "sockAddr" .= toJSON sockAddr ]
 
+instance Aeson.ToJSON Socket.SockAddr where
+    toJSON sockAddr = String (pack $ show sockAddr)
+
+instance Aeson.ToJSONKey Socket.SockAddr where
 
 instance (Show txid, Show tx)
       => ToObject (TraceTxSubmissionOutbound txid tx) where
@@ -1177,6 +1190,38 @@ instance ToObject (TracePeerSelection Socket.SockAddr) where
     mkObject [ "kind" .= String "TracePeerSelection"
              , "event" .= show ev ]
 
+instance Aeson.ToJSON AbstractState where
+    toJSON UnknownConnectionSt =
+      Aeson.object [ "kind" .= String "UnknownConnectionSt" ]
+    toJSON ReservedOutboundSt =
+      Aeson.object [ "kind" .= String "ReservedOutboundSt" ]
+    toJSON (UnnegotiatedSt provenance) =
+      Aeson.object [ "kind" .= String "UnnegotatedSt"
+                   , "provenance" .= String (pack . show $ provenance)
+                   ]
+    toJSON (InboundIdleSt dataFlow) =
+      Aeson.object [ "kind" .= String "InboundIdleSt"
+                   , "dataFlow" .= String (pack . show $ dataFlow)
+                   ]
+    toJSON (InboundSt dataFlow) =
+      Aeson.object [ "kind" .= String "InboundSt"
+                   , "dataFlow" .= String (pack . show $ dataFlow)
+                   ]
+    toJSON OutboundUniSt =
+      Aeson.object [ "kind" .= String "OutboundUniSt" ]
+    toJSON (OutboundDupSt timeoutExpired) =
+      Aeson.object [ "kind" .= String "OutboundUniSt"
+                   , "timeoutState" .= String (pack . show $ timeoutExpired)
+                   ]
+    toJSON DuplexSt =
+      Aeson.object [ "kind" .= String "DuplexSt" ]
+    toJSON WaitRemoteIdleSt =
+      Aeson.object [ "kind" .= String "WaitRemoteIdleSt" ]
+    toJSON TerminatingSt =
+      Aeson.object [ "kind" .= String "TerminatingSt" ]
+    toJSON TerminatedSt =
+      Aeson.object [ "kind" .= String "TerminatedSt" ]
+
 
 peerSelectionTargetsToObject :: PeerSelectionTargets -> Value
 peerSelectionTargetsToObject
@@ -1222,7 +1267,8 @@ instance ToObject PeerSelectionCounters where
     mkObject [ "kind" .= String "PeerSelectionCounters"
              , "event" .= show ev ]
 
-instance (Show addr, Show versionNumber, Show agreedOptions, ToObject addr)
+instance (Show addr, Show versionNumber, Show agreedOptions, ToObject addr,
+          Aeson.ToJSONKey addr)
       => ToObject (ConnectionManagerTrace addr (ConnectionHandlerTrace versionNumber agreedOptions)) where
   toObject verb ev =
     case ev of
@@ -1341,6 +1387,11 @@ instance (Show addr, Show versionNumber, Show agreedOptions, ToObject addr)
         mkObject
           [ "kind" .= String "ConnectionManagerCounters"
           , "state" .= String (pack . show $ cmCounters)
+          ]
+      TrState cmState ->
+        mkObject
+          [ "kind"  .= String "State"
+          , ("state", Aeson.toJSON cmState)
           ]
 
 
