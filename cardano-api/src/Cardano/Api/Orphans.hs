@@ -37,8 +37,8 @@ import qualified Shelley.Spec.Ledger.Delegation.Certificates as Shelley
 import qualified Shelley.Spec.Ledger.EpochBoundary as ShelleyEpoch
 import qualified Shelley.Spec.Ledger.LedgerState as ShelleyLedger
 import           Shelley.Spec.Ledger.PParams (PParamsUpdate)
-import qualified Shelley.Spec.Ledger.Rewards as Shelley
 import qualified Shelley.Spec.Ledger.RewardUpdate as Shelley
+import qualified Shelley.Spec.Ledger.Rewards as Shelley
 
 -- Orphan instances involved in the JSON output of the API queries.
 -- We will remove/replace these as we provide more API wrapper types

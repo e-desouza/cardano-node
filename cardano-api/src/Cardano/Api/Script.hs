@@ -99,7 +99,6 @@ import           Data.Aeson (Value (..), object, (.:), (.=))
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Encoding as Aeson
 import qualified Data.Aeson.Types as Aeson
-import qualified Data.Aeson.Encoding as Aeson
 import qualified Data.Sequence.Strict as Seq
 import           Data.Vector (Vector)
 import qualified Data.Vector as Vector
@@ -121,7 +120,6 @@ import qualified Cardano.Ledger.ShelleyMA.Timelocks as Timelock
 import           Ouroboros.Consensus.Shelley.Eras (StandardCrypto)
 import qualified Shelley.Spec.Ledger.Keys as Shelley
 import qualified Shelley.Spec.Ledger.Scripts as Shelley
-import qualified Shelley.Spec.Ledger.Tx as Shelley
 
 import           Cardano.Api.Eras
 import           Cardano.Api.HasTypeProxy
