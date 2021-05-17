@@ -5,6 +5,7 @@ module Cardano.Logger.Handlers.Logs.Log
   , logExtension
   , symLinkName
   , isItSymLink
+  , doesSymLinkValid
   , isItLog
   , createLogAndSymLink
   , createLogAndUpdateSymLink
@@ -12,13 +13,14 @@ module Cardano.Logger.Handlers.Logs.Log
   ) where
 
 import qualified Data.ByteString.Lazy as LBS
-import           Data.Char (isDigit)
+import           Data.Maybe (isJust)
 import           Data.Time (UTCTime, getCurrentTime)
 import           Data.Time.Format (defaultTimeLocale, formatTime, parseTimeM)
 import qualified Data.Text as T
-import           System.Directory (createFileLink, pathIsSymbolicLink, renamePath,
-                                   withCurrentDirectory)
-import           System.FilePath ((<.>), takeBaseName, takeExtension)
+import           System.Directory (createFileLink, doesFileExist, getSymbolicLinkTarget,
+                                   pathIsSymbolicLink, renamePath, withCurrentDirectory)
+import           System.FilePath ((</>), (<.>), takeBaseName, takeDirectory, takeFileName,
+                                  takeExtension)
 
 import           Cardano.Logger.Configuration
 
@@ -40,15 +42,27 @@ isItSymLink
   -> LogFormat
   -> IO Bool
 isItSymLink fileName format =
-  if fileName == symLinkName format
+  if takeFileName fileName == symLinkName format
     then pathIsSymbolicLink fileName
     else return False
 
+doesSymLinkValid :: FilePath -> IO Bool
+doesSymLinkValid pathToSymLink = do
+  logName <- getSymbolicLinkTarget pathToSymLink
+  -- Target log is always in the same subdir.
+  let subDirForLogs = takeDirectory pathToSymLink
+      pathToLog = subDirForLogs </> logName
+  -- If the symlink is valid, 'pathToLog' does exist.
+  doesFileExist pathToLog
+
 isItLog :: LogFormat -> FilePath -> Bool
-isItLog format fileName = hasProperPrefix && hasTimestamp && hasProperExt
- where
+isItLog format pathToLog = hasProperPrefix && hasTimestamp && hasProperExt
+  where
+  fileName        = takeFileName pathToLog
   hasProperPrefix = T.pack logPrefix `T.isPrefixOf` T.pack fileName
-  hasTimestamp    = T.length maybeTimestamp == 14 && T.all isDigit maybeTimestamp
+  hasTimestamp    = isJust timeStamp
+  timeStamp :: Maybe UTCTime
+  timeStamp = parseTimeM True defaultTimeLocale timeStampFormat (T.unpack maybeTimestamp)
   maybeTimestamp  = T.drop (length logPrefix) . T.pack . takeBaseName $ fileName
   hasProperExt    = takeExtension fileName == logExtension format
 
@@ -77,10 +91,10 @@ createLog format = do
 -- | This function is applied to the log we already checked,
 -- so we definitely know it contains timestamp.
 getTimeStampFromLog :: FilePath -> Maybe UTCTime
-getTimeStampFromLog logName =
+getTimeStampFromLog pathToLog =
   parseTimeM True defaultTimeLocale timeStampFormat timeStamp
  where
-  timeStamp = drop (length logPrefix) . takeBaseName $ logName
+  timeStamp = drop (length logPrefix) . takeBaseName . takeFileName $ pathToLog
 
 timeStampFormat :: String
-timeStampFormat = "%Y%m%d%H%M%S"
+timeStampFormat = "%Y-%m-%dT%H-%M-%S"

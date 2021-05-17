@@ -19,14 +19,15 @@ import qualified Data.Text.Lazy as TL
 import           Data.Text.Lazy.Encoding (encodeUtf8)
 import           Data.Time.Clock (UTCTime)
 import           Data.Time.Format (defaultTimeLocale, formatTime)
-import           System.Directory (doesFileExist, createDirectoryIfMissing)
-import           System.FilePath.Posix ((</>))
+import           System.Directory (doesFileExist, createDirectoryIfMissing, removeFile)
+import           System.FilePath ((</>))
 import           System.IO (hPutStrLn, stderr)
 
 import           Cardano.BM.Data.LogItem
 
 import           Cardano.Logger.Configuration
-import           Cardano.Logger.Handlers.Logs.Log (createLogAndSymLink, symLinkName)
+import           Cardano.Logger.Handlers.Logs.Log (createLogAndSymLink, doesSymLinkValid,
+                                                   symLinkName)
 import           Cardano.Logger.Types (NodeId, NodeName)
 
 writeLogObjectsToFile
@@ -45,7 +46,14 @@ writeLogObjectsToFile nodeId nodeName rootDir format logObjects =
       symLinkIsHere <- doesFileExist pathToCurrentLog
       unless symLinkIsHere $
         createLogAndSymLink subDirForLogs format
-      writeLogObjects pathToCurrentLog (loFormatter format) logObjects
+      -- Symlink can be broken, check it.
+      doesSymLinkValid pathToCurrentLog >>= \case
+        True ->
+          writeLogObjects pathToCurrentLog (loFormatter format) logObjects
+        False -> do
+          -- Symlink is here, but it's broken.
+          removeFile pathToCurrentLog
+          createLogAndSymLink subDirForLogs format
  where
   subDirForLogs = rootDir </> nodeFullId
   nodeFullId = if T.null nodeName

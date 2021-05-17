@@ -12,10 +12,14 @@
   "hasPrometheus": null,
   "logging": [
     {
-      "logRoot": "logs",
+      "logRoot": "/tmp/cardano-logger-logs",
       "logMode": "FileMode",
       "logFormat": "AsJSON"
     }
   ],
-  "rotation": null
+  "rotation": {
+    "rpKeepFilesNum": 1,
+    "rpLogLimitBytes": 50000,
+    "rpMaxAgeHours": 1
+  }
 }

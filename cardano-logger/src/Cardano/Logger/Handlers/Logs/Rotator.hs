@@ -10,13 +10,14 @@ module Cardano.Logger.Handlers.Logs.Rotator
 import           Control.Exception.Safe (Exception (..), catchIO)
 import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.Async (forConcurrently_)
-import           Control.Monad (filterM, forever, when)
-import           Data.List (nub, sort)
+import           Control.Monad (filterM, forM_, forever, when)
+import           Data.List (find, nub, sort)
 import           Data.Time (diffUTCTime, getCurrentTime)
 import           Data.Word (Word64)
-import           System.Directory (doesDirectoryExist, getFileSize, createFileLink,
+import           System.Directory (doesDirectoryExist, getFileSize,
+                                   getSymbolicLinkTarget, createFileLink,
                                    listDirectory, removeFile)
-import           System.FilePath ((</>), takeDirectory)
+import           System.FilePath ((</>), takeDirectory, takeFileName)
 import           System.IO (hPutStrLn, stderr)
 
 import           Cardano.Logger.Configuration
@@ -41,8 +42,8 @@ launchRotator
   -> IO ()
 launchRotator _ [] = return ()
 launchRotator rotParams rootDirsWithFormats = forever $ do
-  forConcurrently_ rootDirsWithFormats $ checkRootDir rotParams
-  threadDelay 20000000
+  forM_ rootDirsWithFormats $ checkRootDir rotParams
+  threadDelay 10000000
 
 checkRootDir
   :: RotationParams
@@ -58,15 +59,15 @@ checkRootDir rotParams (rootDir, format) =
         -- There are no nodes' subdirs yet (or they were deleted),
         -- so no rotation can be performed.
         return ()
-      maybeSubDirs ->
+      maybeSubDirs -> do
+        let fullPathsToSubDirs = map (rootDir </>) maybeSubDirs
         -- All the logs received from particular node will be stored in a subdir.
-        filterM doesDirectoryExist maybeSubDirs >>= \case
+        filterM doesDirectoryExist fullPathsToSubDirs >>= \case
           [] ->
             -- There are no subdirs with logs here, so no rotation can be performed.
             return ()
-          subDirs -> do
-            let fullPathsToSubDirs = map ((</>) rootDir) subDirs
-            forConcurrently_ fullPathsToSubDirs $ checkLogsFromNode rotParams format
+          subDirs ->
+            forConcurrently_ subDirs $ checkLogsFromNode rotParams format
 
 checkLogsFromNode
   :: RotationParams
@@ -85,7 +86,7 @@ checkLogsFromNode rotParams format subDirForLogs =
       -- (probably invalid symlink only), we have to try to fix it.
       fixLog (subDirForLogs </> oneFile) format
     logs -> do
-      let fullPathsToLogs = map ((</>) subDirForLogs) logs
+      let fullPathsToLogs = map (subDirForLogs </>) logs
       checkLogs rotParams format fullPathsToLogs
 
 fixLog
@@ -109,12 +110,8 @@ checkLogs
   -> [FilePath]
   -> IO ()
 checkLogs RotationParams{..} format logs = do
-  -- Since the names of the logs starts with the same name and
-  -- contain timestamp, we can sort them so the earliest log will
-  -- always be the first one and the latest one will be the last one.
-  let logsWeNeed = sort . filter (isItLog format) $ logs
-  checkIfCurrentLogIsFull logsWeNeed format rpLogLimitBytes
-  checkIfThereAreOldLogs logsWeNeed format rpMaxAgeHours rpKeepFilesNum
+  checkIfCurrentLogIsFull logs format rpLogLimitBytes
+  checkIfThereAreOldLogs logs format rpMaxAgeHours rpKeepFilesNum
 
 checkIfCurrentLogIsFull
   :: [FilePath]
@@ -122,16 +119,30 @@ checkIfCurrentLogIsFull
   -> Word64
   -> IO ()
 checkIfCurrentLogIsFull [] _ _ = return ()
-checkIfCurrentLogIsFull logs format maxSizeInBytes = do
-  itIsFull <- isItFull currentLog
-  when itIsFull $ do
-    let subDirForLogs = takeDirectory $ head logs -- All these logs are in the same subdir.
-    createLogAndUpdateSymLink subDirForLogs format
+checkIfCurrentLogIsFull logs format maxSizeInBytes =
+  case find (\logPath -> takeFileName logPath == symLinkName format) logs of
+    Just symLink ->
+      doesSymLinkValid symLink >>= \case
+        True -> do
+          itIsFull <- isItFull =<< getPathToLatestLog symLink
+          when itIsFull $ createLogAndUpdateSymLink subDirForLogs format
+        False -> do
+          -- Remove invalid symlink.
+          removeFile symLink
+    Nothing ->
+      -- There is no symlink we need, so skip check for now:
+      -- this symlink will be created when the new 'LogObject's will be received.
+      return ()
  where
-  currentLog = last logs -- Log we're writing in, via symlink.
+  subDirForLogs = takeDirectory $ head logs -- All these logs are in the same subdir.
+
+  getPathToLatestLog symlink = do
+    logName <- getSymbolicLinkTarget symlink
+    return $ subDirForLogs </> logName
+
   isItFull logName = do
-    logSize <- getFileSize logName
-    return $ fromIntegral logSize >= maxSizeInBytes
+    sz <- getFileSize logName
+    return $ fromIntegral sz >= maxSizeInBytes
 
 checkIfThereAreOldLogs
   :: [FilePath]
@@ -142,10 +153,12 @@ checkIfThereAreOldLogs
 checkIfThereAreOldLogs [] _ _ _ = return ()
 checkIfThereAreOldLogs logs format maxAgeInHours keepFilesNum = do
   now <- getCurrentTime
-  let oldLogs = filter (oldLog now) logs
-      remainingLogsNum = length logs - length oldLogs
+  let logsWeNeed = filter (isItLog format) logs
+      -- Sort by name with timestamp, so the latest logs will always be in the end.
+      oldLogs = sort . filter (oldLog now) $ logsWeNeed
+      remainingLogsNum = length logsWeNeed - length oldLogs
   if remainingLogsNum >= fromIntegral keepFilesNum
-    then removeAllOldLogs  oldLogs remainingLogsNum
+    then mapM_ removeFile oldLogs
     else removeSomeOldLogs oldLogs remainingLogsNum
  where
   oldLog now' logName =
@@ -157,19 +170,6 @@ checkIfThereAreOldLogs logs format maxAgeInHours keepFilesNum = do
 
   maxAgeInSecs = fromIntegral maxAgeInHours * 3600
   toSeconds age = fromEnum age `div` 1000000000000
-
-  removeAllOldLogs [] _ = return ()
-  removeAllOldLogs oldLogs remainingLogsNum = do
-    mapM_ removeFile oldLogs
-    -- We removed all old logs, but there is a possible situation
-    -- when 'keepFilesNum' is 0 (user doesn't want to keep any old logs)
-    -- and remainingLogsNum is 0 (because all the logs were old).
-    -- But in this case our symlink is invalid now, because we removed
-    -- the current log as well.
-    when (remainingLogsNum == 0) $ do
-      let subDirForLogs = takeDirectory $ head oldLogs -- All these logs are in the same subdir.
-      removeFile $ subDirForLogs </> symLinkName format
-      createLogAndSymLink subDirForLogs format
 
   removeSomeOldLogs [] _ = return ()
   removeSomeOldLogs oldLogs remainingLogsNum = do
