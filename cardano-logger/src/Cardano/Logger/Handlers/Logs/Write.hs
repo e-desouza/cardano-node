@@ -9,6 +9,7 @@ module Cardano.Logger.Handlers.Logs.Write
   ) where
 
 import           Control.Exception (IOException, try)
+import           Control.Monad (unless)
 import           Data.Aeson (ToJSON, Value (..), (.=), object, toJSON)
 import           Data.Aeson.Text (encodeToLazyText)
 import qualified Data.ByteString.Lazy as LBS
@@ -18,14 +19,14 @@ import qualified Data.Text.Lazy as TL
 import           Data.Text.Lazy.Encoding (encodeUtf8)
 import           Data.Time.Clock (UTCTime)
 import           Data.Time.Format (defaultTimeLocale, formatTime)
-import           System.Directory (createDirectoryIfMissing)
+import           System.Directory (doesFileExist, createDirectoryIfMissing)
 import           System.FilePath.Posix ((</>))
 import           System.IO (hPutStrLn, stderr)
 
 import           Cardano.BM.Data.LogItem
 
 import           Cardano.Logger.Configuration
-import           Cardano.Logger.Handlers.Logs.Log (symLinkName)
+import           Cardano.Logger.Handlers.Logs.Log (createLogAndSymLink, symLinkName)
 import           Cardano.Logger.Types (NodeId, NodeName)
 
 writeLogObjectsToFile
@@ -37,23 +38,26 @@ writeLogObjectsToFile
   -> [LogObject a]
   -> IO ()
 writeLogObjectsToFile nodeId nodeName rootDir format logObjects =
-  try (createDirectoryIfMissing True dirForLogs) >>= \case
+  try (createDirectoryIfMissing True subDirForLogs) >>= \case
     Left (e :: IOException) ->
-      hPutStrLn stderr $ "Cannot write log items to file: " <> show e
-    Right _ ->
-      doWriteLogObjects pathToCurrentLog (loFormatter format) logObjects
+      hPutStrLn stderr $ "Cannot create subdir for log files: " <> show e
+    Right _ -> do
+      symLinkIsHere <- doesFileExist pathToCurrentLog
+      unless symLinkIsHere $
+        createLogAndSymLink subDirForLogs format
+      writeLogObjects pathToCurrentLog (loFormatter format) logObjects
  where
-  dirForLogs = rootDir </> nodeFullId
+  subDirForLogs = rootDir </> nodeFullId
   nodeFullId = if T.null nodeName
                  then show nodeId
                  else T.unpack nodeName <> "-" <> show nodeId
   -- This is a symlink to the current log file, please see rotation parameters.
-  pathToCurrentLog = dirForLogs </> symLinkName format
+  pathToCurrentLog = subDirForLogs </> symLinkName format
 
   loFormatter AsText = loToText
   loFormatter AsJSON = loToJSON
 
-  doWriteLogObjects logPath formatIt =
+  writeLogObjects logPath formatIt =
     -- It's much more efficiently to encode 'Text' explicitly and
     -- then perform 'ByteString'-level 'IO' than perform 'Text'-level 'IO'.
       LBS.appendFile logPath

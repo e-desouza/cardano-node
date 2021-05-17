@@ -16,7 +16,8 @@ import           Data.Char (isDigit)
 import           Data.Time (UTCTime, getCurrentTime)
 import           Data.Time.Format (defaultTimeLocale, formatTime, parseTimeM)
 import qualified Data.Text as T
-import           System.Directory (createFileLink, pathIsSymbolicLink, renamePath)
+import           System.Directory (createFileLink, pathIsSymbolicLink, renamePath,
+                                   withCurrentDirectory)
 import           System.FilePath ((<.>), takeBaseName, takeExtension)
 
 import           Cardano.Logger.Configuration
@@ -52,14 +53,14 @@ isItLog format fileName = hasProperPrefix && hasTimestamp && hasProperExt
   hasProperExt    = takeExtension fileName == logExtension format
 
 -- | Create a new log file and symlink to it, from scratch.
-createLogAndSymLink :: LogFormat -> IO ()
-createLogAndSymLink format =
+createLogAndSymLink :: FilePath -> LogFormat -> IO ()
+createLogAndSymLink subDirForLogs format = withCurrentDirectory subDirForLogs $
   createLog format >>= flip createFileLink (symLinkName format)
 
 -- | Create a new log file and move existing symlink
 -- from the old log file to the new one.
-createLogAndUpdateSymLink :: LogFormat -> IO ()
-createLogAndUpdateSymLink format = do
+createLogAndUpdateSymLink :: FilePath -> LogFormat -> IO ()
+createLogAndUpdateSymLink subDirForLogs format = withCurrentDirectory subDirForLogs $ do
   newLog <- createLog format
   let tmpSymLink  = symLinkNameTmp format
       realSymLink = symLinkName format

@@ -10,12 +10,13 @@ module Cardano.Logger.Handlers.Logs.Rotator
 import           Control.Exception.Safe (Exception (..), catchIO)
 import           Control.Concurrent (threadDelay)
 import           Control.Concurrent.Async (forConcurrently_)
-import           Control.Monad (forever, when)
+import           Control.Monad (filterM, forever, when)
 import           Data.List (nub, sort)
 import           Data.Time (diffUTCTime, getCurrentTime)
 import           Data.Word (Word64)
-import           System.Directory (getFileSize, createFileLink,
+import           System.Directory (doesDirectoryExist, getFileSize, createFileLink,
                                    listDirectory, removeFile)
+import           System.FilePath ((</>), takeDirectory)
 import           System.IO (hPutStrLn, stderr)
 
 import           Cardano.Logger.Configuration
@@ -40,30 +41,52 @@ launchRotator
   -> IO ()
 launchRotator _ [] = return ()
 launchRotator rotParams rootDirsWithFormats = forever $ do
-  forConcurrently_ rootDirsWithFormats $ checkLogsFromNode rotParams
+  forConcurrently_ rootDirsWithFormats $ checkRootDir rotParams
   threadDelay 20000000
 
-checkLogsFromNode
+checkRootDir
   :: RotationParams
   -> (FilePath, LogFormat)
   -> IO ()
-checkLogsFromNode rotParams (rootDir, format) =
-  catchIO checkLogsFromNode' $ \e ->
+checkRootDir rotParams (rootDir, format) =
+  catchIO checkLogsInRootDir' $ \e ->
     hPutStrLn stderr $ "Cannot write log items to file: " <> displayException e
  where
-  checkLogsFromNode' =
+  checkLogsInRootDir' =
     listDirectory rootDir >>= \case
       [] ->
-        -- There are no logs yet (or they were deleted),
+        -- There are no nodes' subdirs yet (or they were deleted),
         -- so no rotation can be performed.
         return ()
-      [oneFile] ->
-        -- At least two files must be there: one log and symlink.
-        -- So if there is only one file, it's a weird situation,
-        -- (probably invalid symlink only), we have to try to fix it.
-        fixLog oneFile format
-      logs ->
-        checkLogs rotParams format logs
+      maybeSubDirs ->
+        -- All the logs received from particular node will be stored in a subdir.
+        filterM doesDirectoryExist maybeSubDirs >>= \case
+          [] ->
+            -- There are no subdirs with logs here, so no rotation can be performed.
+            return ()
+          subDirs -> do
+            let fullPathsToSubDirs = map ((</>) rootDir) subDirs
+            forConcurrently_ fullPathsToSubDirs $ checkLogsFromNode rotParams format
+
+checkLogsFromNode
+  :: RotationParams
+  -> LogFormat
+  -> FilePath
+  -> IO ()
+checkLogsFromNode rotParams format subDirForLogs =
+  listDirectory subDirForLogs >>= \case
+    [] ->
+      -- There are no logs in this subdir (probably they were deleted),
+      -- so no rotation can be performed.
+      return ()
+    [oneFile] ->
+      -- At least two files must be there: one log and symlink.
+      -- So if there is only one file, it's a weird situation,
+      -- (probably invalid symlink only), we have to try to fix it.
+      fixLog (subDirForLogs </> oneFile) format
+    logs -> do
+      let fullPathsToLogs = map ((</>) subDirForLogs) logs
+      checkLogs rotParams format fullPathsToLogs
 
 fixLog
   :: FilePath
@@ -74,7 +97,7 @@ fixLog oneFile format =
     True -> do
       -- It is a single symlink, but corresponding log was deleted.
       removeFile oneFile
-      createLogAndSymLink format
+      createLogAndSymLink (takeDirectory oneFile) format
     False ->
       when (isItLog format oneFile) $
         -- It is a single log, but its symlink was deleted.
@@ -101,7 +124,9 @@ checkIfCurrentLogIsFull
 checkIfCurrentLogIsFull [] _ _ = return ()
 checkIfCurrentLogIsFull logs format maxSizeInBytes = do
   itIsFull <- isItFull currentLog
-  when itIsFull $ createLogAndUpdateSymLink format
+  when itIsFull $ do
+    let subDirForLogs = takeDirectory $ head logs -- All these logs are in the same subdir.
+    createLogAndUpdateSymLink subDirForLogs format
  where
   currentLog = last logs -- Log we're writing in, via symlink.
   isItFull logName = do
@@ -133,6 +158,7 @@ checkIfThereAreOldLogs logs format maxAgeInHours keepFilesNum = do
   maxAgeInSecs = fromIntegral maxAgeInHours * 3600
   toSeconds age = fromEnum age `div` 1000000000000
 
+  removeAllOldLogs [] _ = return ()
   removeAllOldLogs oldLogs remainingLogsNum = do
     mapM_ removeFile oldLogs
     -- We removed all old logs, but there is a possible situation
@@ -141,9 +167,11 @@ checkIfThereAreOldLogs logs format maxAgeInHours keepFilesNum = do
     -- But in this case our symlink is invalid now, because we removed
     -- the current log as well.
     when (remainingLogsNum == 0) $ do
-      removeFile $ symLinkName format
-      createLogAndSymLink format
+      let subDirForLogs = takeDirectory $ head oldLogs -- All these logs are in the same subdir.
+      removeFile $ subDirForLogs </> symLinkName format
+      createLogAndSymLink subDirForLogs format
 
+  removeSomeOldLogs [] _ = return ()
   removeSomeOldLogs oldLogs remainingLogsNum = do
     -- Too many logs are old, so make sure we keep enough latest logs.
     let oldLogsNumToKeep = fromIntegral keepFilesNum - remainingLogsNum
