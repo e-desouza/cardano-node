@@ -1,9 +1,9 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 
-module Cardano.Logger.CLI
-  ( LoggerParams (..)
-  , parseLoggerParams
+module Cardano.Tracer.CLI
+  ( TracerParams (..)
+  , parseTracerParams
   ) where
 
 import           Data.Aeson (FromJSON, ToJSON)
@@ -12,17 +12,17 @@ import           Options.Applicative (Parser, bashCompleter, completer,
                                       help, long, metavar, strOption)
 
 -- | Type for CLI parameters required for the service.
-newtype LoggerParams = LoggerParams
-  { loggerConfig :: FilePath
+newtype TracerParams = TracerParams
+  { tracerConfig :: FilePath
   } deriving (Generic, FromJSON, ToJSON)
 
-parseLoggerParams :: Parser LoggerParams
-parseLoggerParams =
-  LoggerParams
+parseTracerParams :: Parser TracerParams
+parseTracerParams =
+  TracerParams
     <$> parseFilePath
           "config"
           "file"
-          "Configuration file for logger service"
+          "Configuration file for tracer service"
 
 -- Aux parsers
 

@@ -1,14 +1,14 @@
-module Cardano.Logger.Handlers.Metrics.Run
+module Cardano.Tracer.Handlers.Metrics.Run
   ( runMetricsHandler
   ) where
 
 import           System.Remote.Monitoring
 
-import           Cardano.Logger.Configuration
-import           Cardano.Logger.Types (AcceptedItems)
+import           Cardano.Tracer.Configuration
+import           Cardano.Tracer.Types (AcceptedItems)
 
 runMetricsHandler
-  :: LoggerConfig
+  :: TracerConfig
   -> AcceptedItems
   -> IO ()
 runMetricsHandler config acceptedItems = do

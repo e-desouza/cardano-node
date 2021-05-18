@@ -6,10 +6,10 @@ packages:
     cardano-cli
     cardano-client-demo
     cardano-config
-    cardano-logger
     cardano-node
     cardano-node-chairman
     cardano-submit-api
+    cardano-tracer
     nix/workbench/cardano-topology
     trace-forward
 

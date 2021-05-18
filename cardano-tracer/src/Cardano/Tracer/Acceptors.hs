@@ -4,7 +4,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Cardano.Logger.Acceptors
+module Cardano.Tracer.Acceptors
   ( runAcceptors
   ) where
 
@@ -61,15 +61,15 @@ import qualified System.Metrics.Configuration as EKGF
 import qualified System.Metrics.ReqResp as EKGF
 import           System.Metrics.Network.Acceptor (acceptEKGMetrics)
 
-import           Cardano.Logger.Configuration
-import           Cardano.Logger.Types (AcceptedItems, LogObjects, Metrics,
+import           Cardano.Tracer.Configuration
+import           Cardano.Tracer.Types (AcceptedItems, LogObjects, Metrics,
                                        addressToNodeId, prepareAcceptedItems)
 
 runAcceptors
-  :: LoggerConfig
+  :: TracerConfig
   -> AcceptedItems
   -> IO ()
-runAcceptors config@LoggerConfig{..} acceptedItems = do
+runAcceptors config@TracerConfig{..} acceptedItems = do
   stopEKG <- newIORef False
   stopTF  <- newIORef False
 
@@ -83,20 +83,20 @@ runAcceptors config@LoggerConfig{..} acceptedItems = do
   try (runAcceptors' acceptAt configs tidVar acceptedItems) >>= \case
     Left (e :: SomeException) -> do
       -- There is some problem (probably the connection was dropped).
-      putStrLn $ "cardano-logger, runAcceptors problem: " <> show e
+      putStrLn $ "cardano-tracer, runAcceptors problem: " <> show e
       -- Explicitly stop 'serverAsync'.
       killThread =<< readTVarIO tidVar
       runAcceptors config acceptedItems
     Right _ -> return ()
 
 mkAcceptorsConfigs
-  :: LoggerConfig
+  :: TracerConfig
   -> IORef Bool
   -> IORef Bool
   -> ( EKGF.AcceptorConfiguration
      , TF.AcceptorConfiguration (LogObject Text)
      )
-mkAcceptorsConfigs LoggerConfig{..} stopEKG stopTF = (ekgConfig, tfConfig)
+mkAcceptorsConfigs TracerConfig{..} stopEKG stopTF = (ekgConfig, tfConfig)
  where
   ekgConfig =
     EKGF.AcceptorConfiguration
@@ -226,7 +226,7 @@ prepareStores
   -> ConnectionId addr
   -> IO (TF.NodeInfoStore, LogObjects, Metrics)
 prepareStores acceptedItems ConnectionId{..} = do
-  -- Remote address of the node is unique identifier, from the logger's point of view.
+  -- Remote address of the node is unique identifier, from the tracer's point of view.
   let nodeId = addressToNodeId $ show remoteAddress
   prepareAcceptedItems nodeId acceptedItems
   items <- readIORef acceptedItems

@@ -4,7 +4,7 @@ There are two demo programs, `demo-forwarder-mux` and `demo-acceptor-mux`. You c
 
 These demo-programs use two libraries: `trace-forward` and [`ekg-forward`](https://github.com/input-output-hk/ekg-forward). The purpose of these demo-programs is demonstration of `Mux`-ing of two `typed-protocol`s using one single connection.
 
-You can use it as a practical example of how to integrate these two libraries in the forwarder application (for example, `cardano-node`) and in the acceptor application (for example, logger or [RTView](https://github.com/input-output-hk/cardano-rt-view)).
+You can use it as a practical example of how to integrate these two libraries in the forwarder application (for example, `cardano-node`) and in the acceptor application (for example, tracer or [RTView](https://github.com/input-output-hk/cardano-rt-view)).
 
 Demo-programs can be launched in different modes.
 

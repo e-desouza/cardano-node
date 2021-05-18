@@ -1,5 +1,5 @@
 cabal-version:       2.4
-name:                cardano-logger
+name:                cardano-tracer
 version:             0.1.0
 synopsis:            See README for more info
 description:         See README for more info
@@ -34,20 +34,20 @@ library
   import:              common-options
   hs-source-dirs:      src
 
-  exposed-modules:     Cardano.Logger.Acceptors
-                       Cardano.Logger.CLI
-                       Cardano.Logger.Configuration
-                       Cardano.Logger.Handlers
-                       Cardano.Logger.Run
-                       Cardano.Logger.Types
+  exposed-modules:     Cardano.Tracer.Acceptors
+                       Cardano.Tracer.CLI
+                       Cardano.Tracer.Configuration
+                       Cardano.Tracer.Handlers
+                       Cardano.Tracer.Run
+                       Cardano.Tracer.Types
 
-                       Cardano.Logger.Handlers.Logs.Log
-                       Cardano.Logger.Handlers.Logs.Rotator
-                       Cardano.Logger.Handlers.Logs.Run
-                       Cardano.Logger.Handlers.Logs.Write
-                       Cardano.Logger.Handlers.Metrics.Run
+                       Cardano.Tracer.Handlers.Logs.Log
+                       Cardano.Tracer.Handlers.Logs.Rotator
+                       Cardano.Tracer.Handlers.Logs.Run
+                       Cardano.Tracer.Handlers.Logs.Write
+                       Cardano.Tracer.Handlers.Metrics.Run
 
-  other-modules:       Paths_cardano_logger
+  other-modules:       Paths_cardano_tracer
 
   build-depends:         aeson
                        , async
@@ -72,15 +72,15 @@ library
                        , trace-forward
                        , unordered-containers
 
-executable cardano-logger
+executable cardano-tracer
   hs-source-dirs:      app
 
-  main-is:             cardano-logger.hs
+  main-is:             cardano-tracer.hs
 
-  other-modules:       Paths_cardano_logger
+  other-modules:       Paths_cardano_tracer
 
   build-depends:         base
-                       , cardano-logger
+                       , cardano-tracer
                        , optparse-applicative
                        , text
 

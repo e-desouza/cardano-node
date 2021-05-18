@@ -4,7 +4,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Cardano.Logger.Handlers.Logs.Write
+module Cardano.Tracer.Handlers.Logs.Write
   ( writeLogObjectsToFile
   ) where
 
@@ -25,10 +25,10 @@ import           System.IO (hPutStrLn, stderr)
 
 import           Cardano.BM.Data.LogItem
 
-import           Cardano.Logger.Configuration
-import           Cardano.Logger.Handlers.Logs.Log (createLogAndSymLink, doesSymLinkValid,
+import           Cardano.Tracer.Configuration
+import           Cardano.Tracer.Handlers.Logs.Log (createLogAndSymLink, doesSymLinkValid,
                                                    symLinkName)
-import           Cardano.Logger.Types (NodeId, NodeName)
+import           Cardano.Tracer.Types (NodeId, NodeName)
 
 writeLogObjectsToFile
   :: ToJSON a

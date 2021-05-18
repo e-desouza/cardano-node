@@ -2,7 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module Cardano.Logger.Handlers.Logs.Run
+module Cardano.Tracer.Handlers.Logs.Run
   ( runLogsHandler
   ) where
 
@@ -21,14 +21,14 @@ import           Cardano.BM.Data.LogItem (LogObject)
 
 import           Trace.Forward.Protocol.Type (NodeInfoStore)
 
-import           Cardano.Logger.Configuration
-import           Cardano.Logger.Types (AcceptedItems, LogObjects, Metrics,
+import           Cardano.Tracer.Configuration
+import           Cardano.Tracer.Types (AcceptedItems, LogObjects, Metrics,
                                        NodeId, NodeName, getNodeName)
-import           Cardano.Logger.Handlers.Logs.Rotator (runLogsRotator)
-import           Cardano.Logger.Handlers.Logs.Write (writeLogObjectsToFile)
+import           Cardano.Tracer.Handlers.Logs.Rotator (runLogsRotator)
+import           Cardano.Tracer.Handlers.Logs.Write (writeLogObjectsToFile)
 
 runLogsHandler
-  :: LoggerConfig
+  :: TracerConfig
   -> AcceptedItems
   -> IO ()
 runLogsHandler config acceptedItems = do
@@ -40,7 +40,7 @@ runLogsHandler config acceptedItems = do
   uninterruptibleCancel rotThr
 
 handleItemsFromNode
-  :: LoggerConfig
+  :: TracerConfig
   -> (NodeId, (NodeInfoStore, LogObjects, Metrics))
   -> IO ()
 handleItemsFromNode config (nodeId, (niStore, loQueue, _)) = do
@@ -55,7 +55,7 @@ getAllLogObjects loQueue =
 
 writeLogObjects
   :: ToJSON a
-  => LoggerConfig
+  => TracerConfig
   -> NodeId
   -> NodeName
   -> [LogObject a]

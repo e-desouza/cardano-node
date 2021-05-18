@@ -1,23 +1,23 @@
 {-# LANGUAGE RecordWildCards #-}
 
--- | This top-level module will be used by the 'cardano-logger' app.
-module Cardano.Logger.Run
-  ( runCardanoLogger
+-- | This top-level module will be used by the 'cardano-tracer' app.
+module Cardano.Tracer.Run
+  ( runCardanoTracer
   ) where
 
 import           Control.Concurrent.Async (concurrently_)
 
-import           Cardano.Logger.Acceptors (runAcceptors)
-import           Cardano.Logger.CLI (LoggerParams (..))
-import           Cardano.Logger.Configuration (readLoggerConfig)
-import           Cardano.Logger.Handlers (runHandlers)
-import           Cardano.Logger.Types (initAcceptedItems)
+import           Cardano.Tracer.Acceptors (runAcceptors)
+import           Cardano.Tracer.CLI (TracerParams (..))
+import           Cardano.Tracer.Configuration (readTracerConfig)
+import           Cardano.Tracer.Handlers (runHandlers)
+import           Cardano.Tracer.Types (initAcceptedItems)
 
-runCardanoLogger
-  :: LoggerParams
+runCardanoTracer
+  :: TracerParams
   -> IO ()
-runCardanoLogger LoggerParams{..} = do
-  config <- readLoggerConfig loggerConfig
+runCardanoTracer TracerParams{..} = do
+  config <- readTracerConfig tracerConfig
   acceptedItems <- initAcceptedItems
   -- Run two main threads:
   -- 1. For all acceptors: they ask 'LogObject's and metrics from the node

@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Cardano.Logger.Handlers.Logs.Log
+module Cardano.Tracer.Handlers.Logs.Log
   ( logPrefix
   , logExtension
   , symLinkName
@@ -22,7 +22,7 @@ import           System.Directory (createFileLink, doesFileExist, getSymbolicLin
 import           System.FilePath ((</>), (<.>), takeBaseName, takeDirectory, takeFileName,
                                   takeExtension)
 
-import           Cardano.Logger.Configuration
+import           Cardano.Tracer.Configuration
 
 logPrefix :: String
 logPrefix = "node-"

@@ -2,7 +2,7 @@
 
 There are two demo programs, `demo-forwarder` and `demo-acceptor`. You can run these programs in different terminals and see an interaction between them.
 
-Please see `forwarder.hs` module as an example of how to use `trace-forward` library in the node and `acceptor.hs` module as an example of how to use it in acceptor application (for example, logger or RTView).
+Please see `forwarder.hs` module as an example of how to use `trace-forward` library in the node and `acceptor.hs` module as an example of how to use it in acceptor application (for example, tracer or RTView).
 
 ## How To Build It
 

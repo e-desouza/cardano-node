@@ -12,7 +12,7 @@
   "hasPrometheus": null,
   "logging": [
     {
-      "logRoot": "/tmp/cardano-logger-logs",
+      "logRoot": "/tmp/cardano-tracer-logs",
       "logMode": "FileMode",
       "logFormat": "AsJSON"
     }

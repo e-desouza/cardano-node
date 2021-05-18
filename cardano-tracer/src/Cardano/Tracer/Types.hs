@@ -2,7 +2,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Cardano.Logger.Types
+module Cardano.Tracer.Types
   ( AcceptedItems
   , LogObjects
   , Metrics
@@ -37,7 +37,7 @@ type NodeName = Text
 getNodeName :: NodeInfoStore -> IO (Maybe NodeName)
 getNodeName niStore = lookup "NodeName" <$> readIORef niStore
 
--- | It is assumed that the node can be uniquely identified by its IP:port.
+-- | Unique identifier of node: its IP:port.
 data NodeId = NodeId
   { nodeIP   :: !String
   , nodePort :: !Word16
@@ -50,10 +50,14 @@ addressToNodeId :: String -> NodeId
 addressToNodeId remoteAddress =
   -- We assume that 'remoteAddress' is a String-representation of the normal address (IP:port).
   case splitOn ":" . pack $ remoteAddress of
-    [ip, port] -> NodeId (unpack ip)   (read (unpack port) :: Word16)
+    [ip, port] -> NodeId (unpack ip) (read (unpack port) :: Word16)
     _          -> NodeId remoteAddress 0 -- Unexpected format of 'remoteAddress'!
 
+-- We accept 'LogObject's parametrized by 'Text' only, because it is used in the node currently.
+-- Anyway, it is a temporary solution, because current 'LogObject' will be replaced by
+-- lightweight alternative.
 type LogObjects = TBQueue (LogObject Text)
+
 type Metrics    = (EKG.Store, IORef MetricsLocalStore)
 
 type AcceptedItems = IORef (HashMap NodeId (NodeInfoStore, LogObjects, Metrics))
@@ -68,7 +72,7 @@ prepareAcceptedItems
 prepareAcceptedItems nodeId itemsIORef = do
   items' <- readIORef itemsIORef
   -- If such 'nodeId' is already presented in 'items', it means that this node
-  -- already worked with the logger and now it's re-connect to the logger.
+  -- already worked with the tracer and now it's re-connect to the tracer.
   -- No need to re-create its stores.
   unless (nodeId `HM.member` items') $ do
     niStore <- newIORef []

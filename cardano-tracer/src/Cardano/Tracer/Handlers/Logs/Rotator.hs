@@ -3,7 +3,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Cardano.Logger.Handlers.Logs.Rotator
+module Cardano.Tracer.Handlers.Logs.Rotator
   ( runLogsRotator
   ) where
 
@@ -20,11 +20,11 @@ import           System.Directory (doesDirectoryExist, getFileSize,
 import           System.FilePath ((</>), takeDirectory, takeFileName)
 import           System.IO (hPutStrLn, stderr)
 
-import           Cardano.Logger.Configuration
-import           Cardano.Logger.Handlers.Logs.Log
+import           Cardano.Tracer.Configuration
+import           Cardano.Tracer.Handlers.Logs.Log
 
-runLogsRotator :: LoggerConfig -> IO ()
-runLogsRotator LoggerConfig{..} =
+runLogsRotator :: TracerConfig -> IO ()
+runLogsRotator TracerConfig{..} =
   case rotation of
     Nothing -> return () -- No rotation parameters are defined.
     Just rotParams -> launchRotator rotParams rootDirsWithFormats

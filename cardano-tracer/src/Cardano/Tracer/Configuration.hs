@@ -3,7 +3,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Cardano.Logger.Configuration
+module Cardano.Tracer.Configuration
   ( Host
   , Port
   , RemoteAddr (..)
@@ -12,8 +12,8 @@ module Cardano.Logger.Configuration
   , LogMode (..)
   , LogFormat (..)
   , LoggingParams (..)
-  , LoggerConfig (..)
-  , readLoggerConfig
+  , TracerConfig (..)
+  , readTracerConfig
   ) where
 
 import           Data.Aeson (FromJSON, ToJSON, eitherDecodeFileStrict')
@@ -55,7 +55,7 @@ data LoggingParams = LoggingParams
   , logFormat :: !LogFormat
   } deriving (Eq, Generic, FromJSON, Show, ToJSON)
 
-data LoggerConfig = LoggerConfig
+data TracerConfig = TracerConfig
   { acceptAt       :: !RemoteAddr
   , loRequestNum   :: !Word16 -- ^ How many 'LogObject's in one request.
   , ekgRequestFreq :: !Pico   -- ^ How often to request EKG-metrics.
@@ -65,9 +65,9 @@ data LoggerConfig = LoggerConfig
   , rotation       :: !(Maybe RotationParams)
   } deriving (Eq, Generic, FromJSON, Show, ToJSON)
 
--- | Reads the logger's configuration file (path is passed via '--config' CLI option).
-readLoggerConfig :: FilePath -> IO LoggerConfig
-readLoggerConfig pathToConfig =
+-- | Reads the tracer's configuration file (path is passed via '--config' CLI option).
+readTracerConfig :: FilePath -> IO TracerConfig
+readTracerConfig pathToConfig =
   eitherDecodeFileStrict' pathToConfig >>= \case
-    Left e -> Ex.die $ "Invalid logger's configuration: " <> show e
-    Right (config :: LoggerConfig) -> return config
+    Left e -> Ex.die $ "Invalid tracer's configuration: " <> show e
+    Right (config :: TracerConfig) -> return config
