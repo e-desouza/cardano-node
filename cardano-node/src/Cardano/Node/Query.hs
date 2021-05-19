@@ -25,12 +25,15 @@ import           Ouroboros.Consensus.Config.SupportsNode (getSystemStart)
 import qualified Ouroboros.Consensus.HardFork.Combinator.Compat as HF
 import           Ouroboros.Consensus.HardFork.Combinator.Degenerate
                      (HardForkLedgerConfig (DegenLedgerConfig))
+import           Ouroboros.Consensus.HardFork.Combinator.PartialConfig
+                     (HasPartialLedgerConfig)
 import qualified Ouroboros.Consensus.HardFork.History.Qry as HFI
 import           Ouroboros.Consensus.Ledger.Extended (ExtLedgerCfg (..), ExtLedgerState)
-import qualified Ouroboros.Consensus.Ledger.Query as Consensus (Query, answerQuery)
+import qualified Ouroboros.Consensus.Ledger.Query as Consensus (BlockQuery, Query(..), answerQuery)
 import           Ouroboros.Consensus.Node (RunNode)
 import           Ouroboros.Consensus.Node.ProtocolInfo (pInfoConfig)
 import qualified Ouroboros.Consensus.Storage.ChainDB as ChainDB
+import qualified Ouroboros.Consensus.Shelley.Eras
 
 import qualified Cardano.Api.Protocol.Types as Protocol
 
@@ -93,10 +96,11 @@ answerQueryWithLedgerState blkType protocol extLedgerState query = runIdentity $
 
     answerQueryHelper
       :: forall m result'. Monad m
-      => Consensus.Query blk result'
+      => HasPartialLedgerConfig blk
+      => Consensus.BlockQuery blk result'
       -> m result'
     answerQueryHelper q = pure $
-      Consensus.answerQuery (ExtLedgerCfg cfg) q extLedgerState
+      Consensus.answerQuery (ExtLedgerCfg cfg) (Consensus.BlockQuery q) extLedgerState
 
     byronQuery :: blk ~ ByronBlockHFC => Identity result
     byronQuery =
@@ -111,7 +115,7 @@ answerQueryWithLedgerState blkType protocol extLedgerState query = runIdentity $
         epochSize = Byron.fromByronEpochSlots $ Byron.configEpochSlots genesis
         slotLength = Byron.fromByronSlotLength $ Byron.genesisSlotLength genesis
 
-    shelleyBasedQuery :: blk ~ ShelleyBlockHFC era => Identity result
+    shelleyBasedQuery :: (blk ~ ShelleyBlockHFC era, Ouroboros.Consensus.Shelley.Eras.ShelleyBasedEra era) => Identity result
     shelleyBasedQuery =
         HF.singleEraCompatQuery
           epochSize

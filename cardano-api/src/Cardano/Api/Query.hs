@@ -40,6 +40,10 @@ module Cardano.Api.Query (
     SlotsToEpochEnd(..),
 
     slotToEpoch,
+
+    LedgerState(..),
+
+    getProgress,
   ) where
 
 import           Data.Aeson (ToJSON (..), object, (.=))
@@ -59,11 +63,14 @@ import qualified Ouroboros.Consensus.HardFork.Combinator as Consensus
 import           Ouroboros.Consensus.HardFork.Combinator.AcrossEras (EraMismatch)
 import qualified Ouroboros.Consensus.HardFork.Combinator.AcrossEras as Consensus
 import qualified Ouroboros.Consensus.HardFork.Combinator.Degenerate as Consensus
+import qualified Ouroboros.Consensus.HardFork.Combinator.PartialConfig as PC
 import qualified Ouroboros.Consensus.HardFork.History as History
 import qualified Ouroboros.Consensus.HardFork.History.Qry as Qry
+import qualified Ouroboros.Consensus.Ledger.Query as Ledger
 
+import Ouroboros.Consensus.BlockchainTime.WallClock.Types (RelativeTime, SlotLength)
 import qualified Ouroboros.Consensus.Byron.Ledger as Consensus
-import           Ouroboros.Consensus.Cardano.Block (StandardCrypto)
+import           Ouroboros.Consensus.Cardano.Block (StandardCrypto, LedgerState(..))
 import qualified Ouroboros.Consensus.Cardano.Block as Consensus
 import qualified Ouroboros.Consensus.Shelley.Ledger as Consensus
 import           Ouroboros.Network.Block (Serialised)
@@ -110,6 +117,26 @@ data QueryInMode mode result where
     :: ConsensusModeIsMultiEra mode
     -> QueryInMode mode (EraHistory mode)
 
+  QueryPartialLedgerConfig
+    :: ConsensusModeIsMultiEra mode
+    -> QueryInMode mode (PC.WrapPartialLedgerConfig (ConsensusBlockForMode mode))
+
+data EraHistory mode where
+  EraHistory
+    :: ConsensusBlockForMode mode ~ Consensus.HardForkBlock xs
+    => ConsensusMode mode
+    -> History.Interpreter xs
+    -> EraHistory mode
+
+-- data PartialLedgerConfig mode where
+--   PartialLedgerConfig
+--     :: ConsensusMode mode
+--     -> PC.PartialLedgerConfig xs
+--     -> PartialLedgerConfig mode
+
+getProgress :: SlotNo -> EraHistory mode -> Either Qry.PastHorizonException (RelativeTime, SlotLength)
+getProgress slotNo (EraHistory _ interpreter) = Qry.interpretQuery interpreter (Qry.slotToWallclock slotNo)
+
 --TODO: add support for these
 --     QueryEraStart   :: ConsensusModeIsMultiEra mode
 --                     -> EraInMode era mode
@@ -118,13 +145,6 @@ data QueryInMode mode result where
 newtype SlotsInEpoch = SlotsInEpoch Word64
 
 newtype SlotsToEpochEnd = SlotsToEpochEnd Word64
-
-data EraHistory mode where
-  EraHistory
-    :: ConsensusBlockForMode mode ~ Consensus.HardForkBlock xs
-    => ConsensusMode mode
-    -> History.Interpreter xs
-    -> EraHistory mode
 
 slotToEpoch :: SlotNo -> EraHistory mode -> Either Qry.PastHorizonException (EpochNo, SlotsInEpoch, SlotsToEpochEnd)
 slotToEpoch slotNo (EraHistory _ interpreter) = case Qry.interpretQuery interpreter (Qry.slotToEpoch slotNo) of
@@ -295,18 +315,21 @@ fromShelleyRewardAccounts =
 toConsensusQuery :: forall mode block result.
                     ConsensusBlockForMode mode ~ block
                  => QueryInMode mode result
-                 -> Some (Consensus.Query block)
-toConsensusQuery (QueryCurrentEra CardanoModeIsMultiEra) =
-    Some (Consensus.QueryHardFork Consensus.GetCurrentEra)
-
-toConsensusQuery (QueryInEra ByronEraInByronMode QueryByronUpdateState) =
-    Some (Consensus.DegenQuery Consensus.GetUpdateInterfaceState)
+                 -> Some (Ledger.Query block)
+toConsensusQuery (QueryPartialLedgerConfig CardanoModeIsMultiEra) =
+    Some Ledger.GetPartialLedgerConfig
 
 toConsensusQuery (QueryEraHistory CardanoModeIsMultiEra) =
-    Some (Consensus.QueryHardFork Consensus.GetInterpreter)
+    Some (Ledger.BlockQuery (Consensus.QueryHardFork Consensus.GetInterpreter))
+
+toConsensusQuery (QueryCurrentEra CardanoModeIsMultiEra) =
+    Some (Ledger.BlockQuery (Consensus.QueryHardFork Consensus.GetCurrentEra))
+
+toConsensusQuery (QueryInEra ByronEraInByronMode QueryByronUpdateState) =
+    Some (Ledger.BlockQuery (Consensus.DegenQuery Consensus.GetUpdateInterfaceState))
 
 toConsensusQuery (QueryInEra ByronEraInCardanoMode QueryByronUpdateState) =
-    Some (Consensus.QueryIfCurrentByron Consensus.GetUpdateInterfaceState)
+    Some (Ledger.BlockQuery (Consensus.QueryIfCurrentByron Consensus.GetUpdateInterfaceState))
 
 toConsensusQuery (QueryInEra erainmode (QueryInShelleyBasedEra era q)) =
     case erainmode of
@@ -326,46 +349,46 @@ toConsensusQueryShelleyBased
   => block ~ Consensus.HardForkBlock xs
   => EraInMode era mode
   -> QueryInShelleyBasedEra era result
-  -> Some (Consensus.Query block)
+  -> Some (Ledger.Query block)
 toConsensusQueryShelleyBased erainmode QueryChainPoint =
-    Some (consensusQueryInEraInMode erainmode Consensus.GetLedgerTip)
+    Some (Ledger.BlockQuery (consensusQueryInEraInMode erainmode Consensus.GetLedgerTip))
 
 toConsensusQueryShelleyBased erainmode QueryEpoch =
-    Some (consensusQueryInEraInMode erainmode Consensus.GetEpochNo)
+    Some (Ledger.BlockQuery (consensusQueryInEraInMode erainmode Consensus.GetEpochNo))
 
 toConsensusQueryShelleyBased erainmode QueryGenesisParameters =
-    Some (consensusQueryInEraInMode erainmode Consensus.GetGenesisConfig)
+    Some (Ledger.BlockQuery (consensusQueryInEraInMode erainmode Consensus.GetGenesisConfig))
 
 toConsensusQueryShelleyBased erainmode QueryProtocolParameters =
-    Some (consensusQueryInEraInMode erainmode Consensus.GetCurrentPParams)
+    Some (Ledger.BlockQuery (consensusQueryInEraInMode erainmode Consensus.GetCurrentPParams))
 
 toConsensusQueryShelleyBased erainmode QueryProtocolParametersUpdate =
-    Some (consensusQueryInEraInMode erainmode Consensus.GetProposedPParamsUpdates)
+    Some (Ledger.BlockQuery (consensusQueryInEraInMode erainmode Consensus.GetProposedPParamsUpdates))
 
 toConsensusQueryShelleyBased erainmode QueryStakeDistribution =
-    Some (consensusQueryInEraInMode erainmode Consensus.GetStakeDistribution)
+    Some (Ledger.BlockQuery (consensusQueryInEraInMode erainmode Consensus.GetStakeDistribution))
 
 toConsensusQueryShelleyBased erainmode (QueryUTxO Nothing) =
-    Some (consensusQueryInEraInMode erainmode Consensus.GetUTxO)
+    Some (Ledger.BlockQuery (consensusQueryInEraInMode erainmode Consensus.GetUTxO))
 
 toConsensusQueryShelleyBased erainmode (QueryUTxO (Just addrs)) =
-    Some (consensusQueryInEraInMode erainmode (Consensus.GetFilteredUTxO addrs'))
+    Some (Ledger.BlockQuery (consensusQueryInEraInMode erainmode (Consensus.GetFilteredUTxO addrs')))
   where
     addrs' :: Set (Shelley.Addr Consensus.StandardCrypto)
     addrs' = toShelleyAddrSet (eraInModeToEra erainmode) addrs
 
 toConsensusQueryShelleyBased erainmode (QueryStakeAddresses creds _nId) =
-    Some (consensusQueryInEraInMode erainmode
-            (Consensus.GetFilteredDelegationsAndRewardAccounts creds'))
+    Some (Ledger.BlockQuery (consensusQueryInEraInMode erainmode
+            (Consensus.GetFilteredDelegationsAndRewardAccounts creds')))
   where
     creds' :: Set (Shelley.Credential Shelley.Staking StandardCrypto)
     creds' = Set.map toShelleyStakeCredential creds
 
 toConsensusQueryShelleyBased erainmode QueryDebugLedgerState =
-    Some (consensusQueryInEraInMode erainmode (Consensus.GetCBOR Consensus.DebugNewEpochState))
+    Some (Ledger.BlockQuery (consensusQueryInEraInMode erainmode (Consensus.GetCBOR Consensus.DebugNewEpochState)))
 
 toConsensusQueryShelleyBased erainmode QueryProtocolState =
-    Some (consensusQueryInEraInMode erainmode (Consensus.GetCBOR Consensus.DebugChainDepState))
+    Some (Ledger.BlockQuery (consensusQueryInEraInMode erainmode (Consensus.GetCBOR Consensus.DebugChainDepState)))
 
 consensusQueryInEraInMode
   :: forall era mode erablock modeblock result result' xs.
@@ -374,8 +397,8 @@ consensusQueryInEraInMode
   => modeblock ~ Consensus.HardForkBlock xs
   => Consensus.HardForkQueryResult xs result ~ result'
   => EraInMode era mode
-  -> Consensus.Query erablock  result
-  -> Consensus.Query modeblock result'
+  -> Consensus.BlockQuery erablock  result
+  -> Consensus.BlockQuery modeblock result'
 consensusQueryInEraInMode ByronEraInByronMode     = Consensus.DegenQuery
 consensusQueryInEraInMode ShelleyEraInShelleyMode = Consensus.DegenQuery
 consensusQueryInEraInMode ByronEraInCardanoMode   = Consensus.QueryIfCurrentByron
@@ -391,31 +414,37 @@ consensusQueryInEraInMode MaryEraInCardanoMode    = Consensus.QueryIfCurrentMary
 fromConsensusQueryResult :: forall mode block result result'.
                             ConsensusBlockForMode mode ~ block
                          => QueryInMode mode result
-                         -> Consensus.Query block result'
+                         -> Ledger.Query block result'
                          -> result'
                          -> result
+fromConsensusQueryResult (QueryPartialLedgerConfig CardanoModeIsMultiEra) q' r' =
+    case q' of
+      Ledger.GetPartialLedgerConfig -> PC.WrapPartialLedgerConfig r'
+      _ -> fromConsensusQueryResultMismatch
+
 fromConsensusQueryResult (QueryEraHistory CardanoModeIsMultiEra) q' r' =
     case q' of
-      Consensus.QueryHardFork Consensus.GetInterpreter -> EraHistory CardanoMode r'
+      Ledger.BlockQuery (Consensus.QueryHardFork Consensus.GetInterpreter) -> EraHistory CardanoMode r'
       _ -> fromConsensusQueryResultMismatch
 
 fromConsensusQueryResult (QueryCurrentEra CardanoModeIsMultiEra) q' r' =
     case q' of
-      Consensus.QueryHardFork Consensus.GetCurrentEra ->
+      Ledger.BlockQuery (Consensus.QueryHardFork Consensus.GetCurrentEra) ->
         anyEraInModeToAnyEra (fromConsensusEraIndex CardanoMode r')
       _ -> fromConsensusQueryResultMismatch
 
 fromConsensusQueryResult (QueryInEra ByronEraInByronMode
                                      QueryByronUpdateState) q' r' =
     case (q', r') of
-      (Consensus.DegenQuery Consensus.GetUpdateInterfaceState,
+      (Ledger.BlockQuery (Consensus.DegenQuery Consensus.GetUpdateInterfaceState),
        Consensus.DegenQueryResult r'') ->
         Right (ByronUpdateState r'')
+      _ -> fromConsensusQueryResultMismatch
 
 fromConsensusQueryResult (QueryInEra ByronEraInCardanoMode
                                      QueryByronUpdateState) q' r' =
     case q' of
-      Consensus.QueryIfCurrentByron Consensus.GetUpdateInterfaceState ->
+      Ledger.BlockQuery (Consensus.QueryIfCurrentByron Consensus.GetUpdateInterfaceState) ->
         bimap fromConsensusEraMismatch ByronUpdateState r'
       _ -> fromConsensusQueryResultMismatch
 
@@ -426,8 +455,9 @@ fromConsensusQueryResult (QueryInEra ByronEraInByronMode
 fromConsensusQueryResult (QueryInEra ShelleyEraInShelleyMode
                                      (QueryInShelleyBasedEra _era q)) q' r' =
     case (q', r') of
-      (Consensus.DegenQuery q'', Consensus.DegenQueryResult r'') ->
+      (Ledger.BlockQuery (Consensus.DegenQuery q''), Consensus.DegenQueryResult r'') ->
         Right (fromConsensusQueryResultShelleyBased ShelleyBasedEraShelley q q'' r'')
+      _ -> fromConsensusQueryResultMismatch
 
 fromConsensusQueryResult (QueryInEra ByronEraInCardanoMode
                                      (QueryInShelleyBasedEra era _)) _ _ =
@@ -436,7 +466,7 @@ fromConsensusQueryResult (QueryInEra ByronEraInCardanoMode
 fromConsensusQueryResult (QueryInEra ShelleyEraInCardanoMode
                                      (QueryInShelleyBasedEra _era q)) q' r' =
     case q' of
-      Consensus.QueryIfCurrentShelley q'' ->
+      Ledger.BlockQuery (Consensus.QueryIfCurrentShelley q'') ->
         bimap fromConsensusEraMismatch
               (fromConsensusQueryResultShelleyBased ShelleyBasedEraShelley q q'')
               r'
@@ -445,7 +475,7 @@ fromConsensusQueryResult (QueryInEra ShelleyEraInCardanoMode
 fromConsensusQueryResult (QueryInEra AllegraEraInCardanoMode
                                      (QueryInShelleyBasedEra _era q)) q' r' =
     case q' of
-      Consensus.QueryIfCurrentAllegra q'' ->
+      Ledger.BlockQuery (Consensus.QueryIfCurrentAllegra q'') ->
         bimap fromConsensusEraMismatch
               (fromConsensusQueryResultShelleyBased ShelleyBasedEraAllegra q q'')
               r'
@@ -454,7 +484,7 @@ fromConsensusQueryResult (QueryInEra AllegraEraInCardanoMode
 fromConsensusQueryResult (QueryInEra MaryEraInCardanoMode
                                      (QueryInShelleyBasedEra _era q)) q' r' =
     case q' of
-      Consensus.QueryIfCurrentMary q'' ->
+      Ledger.BlockQuery (Consensus.QueryIfCurrentMary q'') ->
         bimap fromConsensusEraMismatch
               (fromConsensusQueryResultShelleyBased ShelleyBasedEraMary q q'')
               r'
@@ -470,7 +500,7 @@ fromConsensusQueryResultShelleyBased
   => Ledger.Crypto ledgerera ~ Consensus.StandardCrypto
   => ShelleyBasedEra era
   -> QueryInShelleyBasedEra era result
-  -> Consensus.Query (Consensus.ShelleyBlock ledgerera) result'
+  -> Consensus.BlockQuery (Consensus.ShelleyBlock ledgerera) result'
   -> result'
   -> result
 fromConsensusQueryResultShelleyBased _ QueryChainPoint q' point =
