@@ -3,6 +3,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies #-}
 
 -- | TextEnvelope Serialisation
 --
@@ -20,36 +21,38 @@ module Cardano.Api.SerialiseTextEnvelope
   , writeFileTextEnvelopeWithOwnerPermissions
   , readTextEnvelopeFromFile
   , readTextEnvelopeOfTypeFromFile
+  , textEnvelopeToJSON
+
     -- * Reading one of several key types
   , FromSomeType(..)
   , deserialiseFromTextEnvelopeAnyOf
   , readFileTextEnvelopeAnyOf
+
+    -- * Data family instances
+  , AsType(..)
   ) where
 
 import           Prelude
 
 import           Data.Bifunctor (first)
+import           Data.ByteString (ByteString)
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Base16 as Base16
+import qualified Data.ByteString.Lazy as LBS
+import qualified Data.List as List
 import           Data.Maybe (fromMaybe)
 import           Data.String (IsString)
-import qualified Data.ByteString as BS
-import           Data.ByteString (ByteString)
-import qualified Data.ByteString.Lazy as LBS
-import qualified Data.ByteString.Base16 as Base16
-import qualified Data.List as List
 import           Data.Text (Text)
 import qualified Data.Text.Encoding as Text
 
+import           Data.Aeson (FromJSON (..), ToJSON (..), object, withObject, (.:), (.=))
 import qualified Data.Aeson as Aeson
-import           Data.Aeson
-                   (FromJSON (..), ToJSON (..), object, withObject, (.:), (.=))
-import           Data.Aeson.Encode.Pretty
-                   (Config (..), encodePretty', defConfig, keyOrder)
+import           Data.Aeson.Encode.Pretty (Config (..), defConfig, encodePretty', keyOrder)
 
-import           Control.Monad (unless)
 import           Control.Exception (bracketOnError)
-import           Control.Monad.Trans.Except (ExceptT(..), runExceptT)
-import           Control.Monad.Trans.Except.Extra
-                   (hoistEither, firstExceptT, handleIOExceptT)
+import           Control.Monad (unless)
+import           Control.Monad.Trans.Except (ExceptT (..), runExceptT)
+import           Control.Monad.Trans.Except.Extra (firstExceptT, handleIOExceptT, hoistEither)
 
 import           System.Directory (removeFile, renameFile)
 import           System.FilePath (splitFileName, (<.>))
@@ -89,6 +92,10 @@ data TextEnvelope = TextEnvelope
   , teDescription :: !TextEnvelopeDescr
   , teRawCBOR     :: !ByteString
   } deriving (Eq, Show)
+
+instance HasTypeProxy TextEnvelope where
+    data AsType TextEnvelope = AsTextEnvelope
+    proxyToAsType _ = AsTextEnvelope
 
 instance ToJSON TextEnvelope where
   toJSON TextEnvelope {teType, teDescription, teRawCBOR} =
@@ -209,7 +216,7 @@ deserialiseFromTextEnvelopeAnyOf types te =
 
 writeFileWithOwnerPermissions
   :: FilePath
-  -> ByteString
+  -> LBS.ByteString
   -> IO (Either (FileError ()) ())
 writeFileWithOwnerPermissions targetPath a =
     bracketOnError
@@ -218,7 +225,7 @@ writeFileWithOwnerPermissions targetPath a =
         hClose fHandle >> removeFile tmpPath
         return . Left $ FileErrorTempFile targetPath tmpPath fHandle)
       (\(tmpPath, fHandle) -> do
-          BS.hPut fHandle a
+          LBS.hPut fHandle a
           hClose fHandle
           renameFile tmpPath targetPath
           return $ Right ())
@@ -232,7 +239,7 @@ writeFileTextEnvelope :: HasTextEnvelope a
                       -> IO (Either (FileError ()) ())
 writeFileTextEnvelope path mbDescr a =
     runExceptT $ do
-      handleIOExceptT (FileIOError path) $ BS.writeFile path content
+      handleIOExceptT (FileIOError path) $ LBS.writeFile path content
   where
     content = textEnvelopeToJSON mbDescr a
 
@@ -249,11 +256,9 @@ writeFileTextEnvelopeWithOwnerPermissions targetPath mbDescr a =
   content = textEnvelopeToJSON mbDescr a
 
 
-textEnvelopeToJSON :: HasTextEnvelope a =>  Maybe TextEnvelopeDescr -> a -> ByteString
+textEnvelopeToJSON :: HasTextEnvelope a =>  Maybe TextEnvelopeDescr -> a -> LBS.ByteString
 textEnvelopeToJSON mbDescr a  =
-  LBS.toStrict $ encodePretty' textEnvelopeJSONConfig
-                               (serialiseToTextEnvelope mbDescr a)
-              <> "\n"
+  encodePretty' textEnvelopeJSONConfig (serialiseToTextEnvelope mbDescr a) <> "\n"
 
 
 readFileTextEnvelope :: HasTextEnvelope a

@@ -22,7 +22,9 @@ module Cardano.Api.Query (
     QueryInMode(..),
     QueryInEra(..),
     QueryInShelleyBasedEra(..),
+    QueryUTxOFilter(..),
     UTxO(..),
+    UTxOInAnyEra(..),
 
     -- * Internal conversion functions
     toConsensusQuery,
@@ -31,25 +33,47 @@ module Cardano.Api.Query (
     -- * Wrapper types used in queries
     SerialisedDebugLedgerState(..),
     ProtocolState(..),
+    decodeProtocolState,
 
     DebugLedgerState(..),
+    decodeDebugLedgerState,
+
+    SerialisedCurrentEpochState(..),
+    CurrentEpochState(..),
+    decodeCurrentEpochState,
 
     EraHistory(..),
+    SystemStart(..),
 
     SlotsInEpoch(..),
     SlotsToEpochEnd(..),
 
     slotToEpoch,
+
+    LedgerState(..),
+
+    getProgress,
+
+    -- * Internal conversion functions
+    toLedgerUTxO,
+    fromLedgerUTxO,
+
   ) where
 
-import           Data.Aeson (ToJSON (..), object, (.=))
-import           Data.Bifunctor (bimap)
+import           Data.Aeson (FromJSON (..), ToJSON (..), object, withObject, (.=))
+import qualified Data.Aeson as Aeson
+import           Data.Aeson.Types (Parser)
+import           Data.Bifunctor (bimap, first)
+import qualified Data.ByteString.Lazy as LBS
+import qualified Data.HashMap.Strict as HMS
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import           Data.Maybe (mapMaybe)
 import           Data.SOP.Strict (SListI)
 import           Data.Set (Set)
 import qualified Data.Set as Set
+import           Data.Sharing (FromSharedCBOR, Interns, Share)
+import           Data.Text (Text)
 import           Data.Typeable
 import           Prelude
 
@@ -62,26 +86,31 @@ import qualified Ouroboros.Consensus.HardFork.Combinator.Degenerate as Consensus
 import qualified Ouroboros.Consensus.HardFork.History as History
 import qualified Ouroboros.Consensus.HardFork.History.Qry as Qry
 
+import           Ouroboros.Consensus.BlockchainTime.WallClock.Types (RelativeTime, SlotLength)
 import qualified Ouroboros.Consensus.Byron.Ledger as Consensus
-import           Ouroboros.Consensus.Cardano.Block (StandardCrypto)
+import           Ouroboros.Consensus.Cardano.Block (LedgerState (..), StandardCrypto)
 import qualified Ouroboros.Consensus.Cardano.Block as Consensus
+import qualified Ouroboros.Consensus.Ledger.Query as Consensus
 import qualified Ouroboros.Consensus.Shelley.Ledger as Consensus
-import           Ouroboros.Network.Block (Serialised)
+import           Ouroboros.Network.Block (Serialised (..))
 
 import           Cardano.Binary
+import           Cardano.Slotting.Slot (WithOrigin (..))
+import           Cardano.Slotting.Time (SystemStart (..))
+
 import qualified Cardano.Chain.Update.Validation.Interface as Byron.Update
 import qualified Cardano.Ledger.Core as Core
 import qualified Cardano.Ledger.Era as Ledger
+import qualified Control.State.Transition.Extended as Ledger
 
-import qualified Cardano.Ledger.Shelley.Constraints as Shelley
-import qualified Shelley.Spec.Ledger.API as Shelley
-import qualified Shelley.Spec.Ledger.LedgerState as Shelley
-import qualified Shelley.Spec.Ledger.PParams as Shelley
+import qualified Cardano.Ledger.Shelley.API as Shelley
+import qualified Cardano.Ledger.Shelley.LedgerState as Shelley
 
 import           Cardano.Api.Address
 import           Cardano.Api.Block
 import           Cardano.Api.Certificate
 import           Cardano.Api.Eras
+import           Cardano.Api.GenesisParameters
 import           Cardano.Api.KeysShelley
 import           Cardano.Api.Modes
 import           Cardano.Api.NetworkId
@@ -90,6 +119,9 @@ import           Cardano.Api.ProtocolParameters
 import           Cardano.Api.TxBody
 import           Cardano.Api.Value
 
+import qualified Cardano.Protocol.TPraos.API as TPraos
+import qualified Data.Aeson.KeyMap as KeyMap
+import qualified Data.Compact.SplitMap as SplitMap
 import           Data.Word (Word64)
 
 -- ----------------------------------------------------------------------------
@@ -110,6 +142,26 @@ data QueryInMode mode result where
     :: ConsensusModeIsMultiEra mode
     -> QueryInMode mode (EraHistory mode)
 
+  QuerySystemStart
+    :: QueryInMode mode SystemStart
+
+  QueryChainBlockNo
+    :: QueryInMode mode (WithOrigin BlockNo)
+
+  QueryChainPoint
+    :: ConsensusMode mode
+    -> QueryInMode mode ChainPoint
+
+data EraHistory mode where
+  EraHistory
+    :: ConsensusBlockForMode mode ~ Consensus.HardForkBlock xs
+    => ConsensusMode mode
+    -> History.Interpreter xs
+    -> EraHistory mode
+
+getProgress :: SlotNo -> EraHistory mode -> Either Qry.PastHorizonException (RelativeTime, SlotLength)
+getProgress slotNo (EraHistory _ interpreter) = Qry.interpretQuery interpreter (Qry.slotToWallclock slotNo)
+
 --TODO: add support for these
 --     QueryEraStart   :: ConsensusModeIsMultiEra mode
 --                     -> EraInMode era mode
@@ -118,13 +170,6 @@ data QueryInMode mode result where
 newtype SlotsInEpoch = SlotsInEpoch Word64
 
 newtype SlotsToEpochEnd = SlotsToEpochEnd Word64
-
-data EraHistory mode where
-  EraHistory
-    :: ConsensusBlockForMode mode ~ Consensus.HardForkBlock xs
-    => ConsensusMode mode
-    -> History.Interpreter xs
-    -> EraHistory mode
 
 slotToEpoch :: SlotNo -> EraHistory mode -> Either Qry.PastHorizonException (EpochNo, SlotsInEpoch, SlotsToEpochEnd)
 slotToEpoch slotNo (EraHistory _ interpreter) = case Qry.interpretQuery interpreter (Qry.slotToEpoch slotNo) of
@@ -144,9 +189,6 @@ deriving instance Show (QueryInEra era result)
 
 
 data QueryInShelleyBasedEra era result where
-     QueryChainPoint
-       :: QueryInShelleyBasedEra era ChainPoint
-
      QueryEpoch
        :: QueryInShelleyBasedEra era EpochNo
 
@@ -164,7 +206,7 @@ data QueryInShelleyBasedEra era result where
        :: QueryInShelleyBasedEra era (Map (Hash StakePoolKey) Rational)
 
      QueryUTxO
-       :: Maybe (Set AddressAny)
+       :: QueryUTxOFilter
        -> QueryInShelleyBasedEra era (UTxO era)
 
      QueryStakeAddresses
@@ -173,7 +215,14 @@ data QueryInShelleyBasedEra era result where
        -> QueryInShelleyBasedEra era (Map StakeAddress Lovelace,
                                       Map StakeAddress PoolId)
 
-     -- TODO: Need to update ledger-specs dependency to access RewardProvenance
+     QueryStakePools
+       :: QueryInShelleyBasedEra era (Set PoolId)
+
+     QueryStakePoolParameters
+       :: Set PoolId
+       -> QueryInShelleyBasedEra era (Map PoolId StakePoolParameters)
+
+     -- TODO: add support for RewardProvenance
      -- QueryPoolRanking
      --   :: QueryInShelleyBasedEra era RewardProvenance
 
@@ -183,29 +232,86 @@ data QueryInShelleyBasedEra era result where
      QueryProtocolState
        :: QueryInShelleyBasedEra era (ProtocolState era)
 
+     QueryCurrentEpochState
+       :: QueryInShelleyBasedEra era (SerialisedCurrentEpochState era)
+
 deriving instance Show (QueryInShelleyBasedEra era result)
+
 
 -- ----------------------------------------------------------------------------
 -- Wrapper types used in queries
 --
+
+-- | Getting the /whole/ UTxO is obviously not efficient since the result can
+-- be huge. Filtering by address is also not efficient because it requires a
+-- linear search.
+--
+-- The 'QueryUTxOFilterByTxIn' is efficient since it fits with the structure of
+-- the UTxO (which is indexed by 'TxIn').
+--
+data QueryUTxOFilter =
+     -- | /O(n) time and space/ for utxo size n
+     QueryUTxOWhole
+
+     -- | /O(n) time, O(m) space/ for utxo size n, and address set size m
+   | QueryUTxOByAddress (Set AddressAny)
+
+     -- | /O(m log n) time, O(m) space/ for utxo size n, and address set size m
+   | QueryUTxOByTxIn (Set TxIn)
+  deriving (Eq, Show)
 
 --TODO: provide appropriate instances for these types as needed, e.g. JSON
 
 newtype ByronUpdateState = ByronUpdateState Byron.Update.State
   deriving Show
 
-newtype UTxO era = UTxO (Map TxIn (TxOut era))
+newtype UTxO era = UTxO { unUTxO :: Map TxIn (TxOut CtxUTxO era) }
+  deriving (Eq, Show)
+
+data UTxOInAnyEra where
+  UTxOInAnyEra :: CardanoEra era
+               -> UTxO era
+               -> UTxOInAnyEra
+
+deriving instance Show UTxOInAnyEra
 
 instance IsCardanoEra era => ToJSON (UTxO era) where
   toJSON (UTxO m) = toJSON m
 
+instance (IsCardanoEra era, IsShelleyBasedEra era, FromJSON (TxOut CtxUTxO era))
+  => FromJSON (UTxO era) where
+    parseJSON = withObject "UTxO" $ \hm -> do
+      let l = HMS.toList $ KeyMap.toHashMapText hm
+      res <- mapM toTxIn l
+      pure . UTxO $ Map.fromList res
+     where
+      toTxIn :: (Text, Aeson.Value) -> Parser (TxIn, TxOut CtxUTxO era)
+      toTxIn (txinText, txOutVal) = do
+        (,) <$> parseJSON (Aeson.String txinText)
+            <*> parseJSON txOutVal
+
 newtype SerialisedDebugLedgerState era
   = SerialisedDebugLedgerState (Serialised (Shelley.NewEpochState (ShelleyLedgerEra era)))
+
+decodeDebugLedgerState :: forall era. ()
+  => FromCBOR (DebugLedgerState era)
+  => SerialisedDebugLedgerState era
+  -> Either LBS.ByteString (DebugLedgerState era)
+decodeDebugLedgerState (SerialisedDebugLedgerState (Serialised ls)) =
+  first (const ls) (decodeFull ls)
 
 data DebugLedgerState era where
   DebugLedgerState :: ShelleyLedgerEra era ~ ledgerera => Shelley.NewEpochState ledgerera -> DebugLedgerState era
 
-instance (Typeable era, Shelley.TransLedgerState FromCBOR (ShelleyLedgerEra era)) => FromCBOR (DebugLedgerState era) where
+instance
+    ( Typeable era
+    , Ledger.Era (ShelleyLedgerEra era)
+    , FromCBOR (Core.PParams (ShelleyLedgerEra era))
+    , FromCBOR (Core.Value (ShelleyLedgerEra era))
+    , FromCBOR (Ledger.State (Core.EraRule "PPUP" (ShelleyLedgerEra era)))
+    , Share (Core.TxOut (ShelleyLedgerEra era)) ~ Interns (Shelley.Credential 'Shelley.Staking (Ledger.Crypto (ShelleyLedgerEra era)))
+    , FromSharedCBOR (Core.TxOut (ShelleyLedgerEra era))
+    ) => FromCBOR (DebugLedgerState era) where
   fromCBOR = DebugLedgerState <$> (fromCBOR :: Decoder s (Shelley.NewEpochState (ShelleyLedgerEra era)))
 
 -- TODO: Shelley based era class!
@@ -213,8 +319,10 @@ instance ( IsShelleyBasedEra era
          , ShelleyLedgerEra era ~ ledgerera
          , Consensus.ShelleyBasedEra ledgerera
          , ToJSON (Core.PParams ledgerera)
-         , ToJSON (Shelley.PParamsDelta ledgerera)
-         , ToJSON (Core.TxOut ledgerera)) => ToJSON (DebugLedgerState era) where
+         , ToJSON (Core.PParamsDelta ledgerera)
+         , ToJSON (Core.TxOut ledgerera)
+         , Share (Core.TxOut (ShelleyLedgerEra era)) ~ Interns (Shelley.Credential 'Shelley.Staking (Ledger.Crypto (ShelleyLedgerEra era)))
+         ) => ToJSON (DebugLedgerState era) where
   toJSON (DebugLedgerState newEpochS) = object [ "lastEpoch" .= Shelley.nesEL newEpochS
                                           , "blocksBefore" .= Shelley.nesBprev newEpochS
                                           , "blocksCurrent" .= Shelley.nesBcur newEpochS
@@ -224,7 +332,30 @@ instance ( IsShelleyBasedEra era
                                           ]
 
 newtype ProtocolState era
-  = ProtocolState (Serialised (Shelley.ChainDepState (Ledger.Crypto (ShelleyLedgerEra era))))
+  = ProtocolState (Serialised (TPraos.ChainDepState (Ledger.Crypto (ShelleyLedgerEra era))))
+
+decodeProtocolState
+  :: ProtocolState era
+  -> Either LBS.ByteString (TPraos.ChainDepState StandardCrypto)
+decodeProtocolState (ProtocolState (Serialised pbs)) =
+  first (const pbs) (decodeFull pbs)
+
+newtype SerialisedCurrentEpochState era
+  = SerialisedCurrentEpochState (Serialised (Shelley.EpochState (ShelleyLedgerEra era)))
+
+newtype CurrentEpochState era = CurrentEpochState (Shelley.EpochState (ShelleyLedgerEra era))
+
+decodeCurrentEpochState
+  :: forall era. Ledger.Era (ShelleyLedgerEra era)
+  => Share (Core.TxOut (ShelleyLedgerEra era)) ~ Interns (Shelley.Credential 'Shelley.Staking (Ledger.Crypto (ShelleyLedgerEra era)))
+  => FromSharedCBOR (Core.TxOut (ShelleyLedgerEra era))
+  => Share (Core.TxOut (ShelleyLedgerEra era)) ~ Interns (Shelley.Credential 'Shelley.Staking (Ledger.Crypto (ShelleyLedgerEra era)))
+  => FromCBOR (Core.PParams (ShelleyLedgerEra era))
+  => FromCBOR (Core.Value (ShelleyLedgerEra era))
+  => FromCBOR (Ledger.State (Core.EraRule "PPUP" (ShelleyLedgerEra era)))
+  => SerialisedCurrentEpochState era
+  -> Either DecoderError (CurrentEpochState era)
+decodeCurrentEpochState (SerialisedCurrentEpochState (Serialised ls)) = CurrentEpochState <$> decodeFull ls
 
 toShelleyAddrSet :: CardanoEra era
                  -> Set AddressAny
@@ -239,22 +370,29 @@ toShelleyAddrSet era =
   . Set.toList
 
 
-fromUTxO
-  :: ShelleyLedgerEra era ~ ledgerera
-  => ShelleyBasedEra era
-  -> Shelley.UTxO ledgerera
-  -> UTxO era
-fromUTxO eraConversion utxo =
-  case eraConversion of
-    ShelleyBasedEraShelley ->
-      let Shelley.UTxO sUtxo = utxo
-      in UTxO . Map.fromList . map (bimap fromShelleyTxIn fromShelleyTxOut) $ Map.toList sUtxo
-    ShelleyBasedEraAllegra ->
-      let Shelley.UTxO sUtxo = utxo
-      in UTxO . Map.fromList . map (bimap fromShelleyTxIn (fromTxOut ShelleyBasedEraAllegra)) $ Map.toList sUtxo
-    ShelleyBasedEraMary ->
-      let Shelley.UTxO sUtxo = utxo
-      in UTxO . Map.fromList . map (bimap fromShelleyTxIn (fromTxOut ShelleyBasedEraMary)) $ Map.toList sUtxo
+toLedgerUTxO :: ShelleyLedgerEra era ~ ledgerera
+             => Ledger.Crypto ledgerera ~ StandardCrypto
+             => ShelleyBasedEra era
+             -> UTxO era
+             -> Shelley.UTxO ledgerera
+toLedgerUTxO era (UTxO utxo) =
+    Shelley.UTxO
+  . SplitMap.fromList
+  . map (bimap toShelleyTxIn (toShelleyTxOut era))
+  . Map.toList
+  $ utxo
+
+fromLedgerUTxO :: ShelleyLedgerEra era ~ ledgerera
+               => Ledger.Crypto ledgerera ~ StandardCrypto
+               => ShelleyBasedEra era
+               -> Shelley.UTxO ledgerera
+               -> UTxO era
+fromLedgerUTxO era (Shelley.UTxO utxo) =
+    UTxO
+  . Map.fromList
+  . map (bimap fromShelleyTxIn (fromShelleyTxOut era))
+  . SplitMap.toList
+  $ utxo
 
 fromShelleyPoolDistr :: Shelley.PoolDistr StandardCrypto
                      -> Map (Hash StakePoolKey) Rational
@@ -297,16 +435,30 @@ toConsensusQuery :: forall mode block result.
                  => QueryInMode mode result
                  -> Some (Consensus.Query block)
 toConsensusQuery (QueryCurrentEra CardanoModeIsMultiEra) =
-    Some (Consensus.QueryHardFork Consensus.GetCurrentEra)
+    Some $ Consensus.BlockQuery $
+      Consensus.QueryHardFork
+        Consensus.GetCurrentEra
 
 toConsensusQuery (QueryInEra ByronEraInByronMode QueryByronUpdateState) =
-    Some (Consensus.DegenQuery Consensus.GetUpdateInterfaceState)
+    Some $ Consensus.BlockQuery $
+      Consensus.DegenQuery
+        Consensus.GetUpdateInterfaceState
 
 toConsensusQuery (QueryEraHistory CardanoModeIsMultiEra) =
-    Some (Consensus.QueryHardFork Consensus.GetInterpreter)
+    Some $ Consensus.BlockQuery $
+      Consensus.QueryHardFork
+        Consensus.GetInterpreter
+
+toConsensusQuery QuerySystemStart = Some Consensus.GetSystemStart
+
+toConsensusQuery QueryChainBlockNo = Some Consensus.GetChainBlockNo
+
+toConsensusQuery (QueryChainPoint _) = Some Consensus.GetChainPoint
 
 toConsensusQuery (QueryInEra ByronEraInCardanoMode QueryByronUpdateState) =
-    Some (Consensus.QueryIfCurrentByron Consensus.GetUpdateInterfaceState)
+    Some $ Consensus.BlockQuery $
+      Consensus.QueryIfCurrentByron
+        Consensus.GetUpdateInterfaceState
 
 toConsensusQuery (QueryInEra erainmode (QueryInShelleyBasedEra era q)) =
     case erainmode of
@@ -316,6 +468,9 @@ toConsensusQuery (QueryInEra erainmode (QueryInShelleyBasedEra era q)) =
       ShelleyEraInCardanoMode -> toConsensusQueryShelleyBased erainmode q
       AllegraEraInCardanoMode -> toConsensusQueryShelleyBased erainmode q
       MaryEraInCardanoMode    -> toConsensusQueryShelleyBased erainmode q
+      AlonzoEraInCardanoMode  -> toConsensusQueryShelleyBased erainmode q
+      BabbageEraInCardanoMode ->
+        error "TODO: Babbage era - depends on consensus exposing a babbage era"
 
 
 toConsensusQueryShelleyBased
@@ -327,9 +482,6 @@ toConsensusQueryShelleyBased
   => EraInMode era mode
   -> QueryInShelleyBasedEra era result
   -> Some (Consensus.Query block)
-toConsensusQueryShelleyBased erainmode QueryChainPoint =
-    Some (consensusQueryInEraInMode erainmode Consensus.GetLedgerTip)
-
 toConsensusQueryShelleyBased erainmode QueryEpoch =
     Some (consensusQueryInEraInMode erainmode Consensus.GetEpochNo)
 
@@ -345,14 +497,20 @@ toConsensusQueryShelleyBased erainmode QueryProtocolParametersUpdate =
 toConsensusQueryShelleyBased erainmode QueryStakeDistribution =
     Some (consensusQueryInEraInMode erainmode Consensus.GetStakeDistribution)
 
-toConsensusQueryShelleyBased erainmode (QueryUTxO Nothing) =
-    Some (consensusQueryInEraInMode erainmode Consensus.GetUTxO)
+toConsensusQueryShelleyBased erainmode (QueryUTxO QueryUTxOWhole) =
+    Some (consensusQueryInEraInMode erainmode Consensus.GetUTxOWhole)
 
-toConsensusQueryShelleyBased erainmode (QueryUTxO (Just addrs)) =
-    Some (consensusQueryInEraInMode erainmode (Consensus.GetFilteredUTxO addrs'))
+toConsensusQueryShelleyBased erainmode (QueryUTxO (QueryUTxOByAddress addrs)) =
+    Some (consensusQueryInEraInMode erainmode (Consensus.GetUTxOByAddress addrs'))
   where
     addrs' :: Set (Shelley.Addr Consensus.StandardCrypto)
     addrs' = toShelleyAddrSet (eraInModeToEra erainmode) addrs
+
+toConsensusQueryShelleyBased erainmode (QueryUTxO (QueryUTxOByTxIn txins)) =
+    Some (consensusQueryInEraInMode erainmode (Consensus.GetUTxOByTxIn txins'))
+  where
+    txins' :: Set (Shelley.TxIn Consensus.StandardCrypto)
+    txins' = Set.map toShelleyTxIn txins
 
 toConsensusQueryShelleyBased erainmode (QueryStakeAddresses creds _nId) =
     Some (consensusQueryInEraInMode erainmode
@@ -361,11 +519,24 @@ toConsensusQueryShelleyBased erainmode (QueryStakeAddresses creds _nId) =
     creds' :: Set (Shelley.Credential Shelley.Staking StandardCrypto)
     creds' = Set.map toShelleyStakeCredential creds
 
+toConsensusQueryShelleyBased erainmode QueryStakePools =
+    Some (consensusQueryInEraInMode erainmode Consensus.GetStakePools)
+
+toConsensusQueryShelleyBased erainmode (QueryStakePoolParameters poolids) =
+    Some (consensusQueryInEraInMode erainmode (Consensus.GetStakePoolParams poolids'))
+  where
+    poolids' :: Set (Shelley.KeyHash Shelley.StakePool Consensus.StandardCrypto)
+    poolids' = Set.map (\(StakePoolKeyHash kh) -> kh) poolids
+
 toConsensusQueryShelleyBased erainmode QueryDebugLedgerState =
     Some (consensusQueryInEraInMode erainmode (Consensus.GetCBOR Consensus.DebugNewEpochState))
 
 toConsensusQueryShelleyBased erainmode QueryProtocolState =
     Some (consensusQueryInEraInMode erainmode (Consensus.GetCBOR Consensus.DebugChainDepState))
+
+toConsensusQueryShelleyBased erainmode QueryCurrentEpochState =
+    Some (consensusQueryInEraInMode erainmode (Consensus.GetCBOR Consensus.DebugEpochState))
+
 
 consensusQueryInEraInMode
   :: forall era mode erablock modeblock result result' xs.
@@ -374,49 +545,74 @@ consensusQueryInEraInMode
   => modeblock ~ Consensus.HardForkBlock xs
   => Consensus.HardForkQueryResult xs result ~ result'
   => EraInMode era mode
-  -> Consensus.Query erablock  result
+  -> Consensus.BlockQuery erablock  result
   -> Consensus.Query modeblock result'
-consensusQueryInEraInMode ByronEraInByronMode     = Consensus.DegenQuery
-consensusQueryInEraInMode ShelleyEraInShelleyMode = Consensus.DegenQuery
-consensusQueryInEraInMode ByronEraInCardanoMode   = Consensus.QueryIfCurrentByron
-consensusQueryInEraInMode ShelleyEraInCardanoMode = Consensus.QueryIfCurrentShelley
-consensusQueryInEraInMode AllegraEraInCardanoMode = Consensus.QueryIfCurrentAllegra
-consensusQueryInEraInMode MaryEraInCardanoMode    = Consensus.QueryIfCurrentMary
-
+consensusQueryInEraInMode erainmode =
+    Consensus.BlockQuery
+  . case erainmode of
+      ByronEraInByronMode     -> Consensus.DegenQuery
+      ShelleyEraInShelleyMode -> Consensus.DegenQuery
+      ByronEraInCardanoMode   -> Consensus.QueryIfCurrentByron
+      ShelleyEraInCardanoMode -> Consensus.QueryIfCurrentShelley
+      AllegraEraInCardanoMode -> Consensus.QueryIfCurrentAllegra
+      MaryEraInCardanoMode    -> Consensus.QueryIfCurrentMary
+      AlonzoEraInCardanoMode  -> Consensus.QueryIfCurrentAlonzo
+      BabbageEraInCardanoMode ->
+        error "TODO: Babbage era - depends on consensus exposing a babbage era"
 
 -- ----------------------------------------------------------------------------
 -- Conversions of query results from the consensus types.
 --
 
-fromConsensusQueryResult :: forall mode block result result'.
-                            ConsensusBlockForMode mode ~ block
+fromConsensusQueryResult :: forall mode block result result'. ConsensusBlockForMode mode ~ block
                          => QueryInMode mode result
                          -> Consensus.Query block result'
                          -> result'
                          -> result
 fromConsensusQueryResult (QueryEraHistory CardanoModeIsMultiEra) q' r' =
     case q' of
-      Consensus.QueryHardFork Consensus.GetInterpreter -> EraHistory CardanoMode r'
+      Consensus.BlockQuery (Consensus.QueryHardFork Consensus.GetInterpreter)
+        -> EraHistory CardanoMode r'
+      _ -> fromConsensusQueryResultMismatch
+
+fromConsensusQueryResult QuerySystemStart q' r' =
+    case q' of
+      Consensus.GetSystemStart
+        -> r'
+      _ -> fromConsensusQueryResultMismatch
+
+fromConsensusQueryResult QueryChainBlockNo q' r' =
+    case q' of
+      Consensus.GetChainBlockNo
+        -> r'
+      _ -> fromConsensusQueryResultMismatch
+
+fromConsensusQueryResult (QueryChainPoint mode) q' r' =
+    case q' of
+      Consensus.GetChainPoint
+        -> fromConsensusPointInMode mode r'
       _ -> fromConsensusQueryResultMismatch
 
 fromConsensusQueryResult (QueryCurrentEra CardanoModeIsMultiEra) q' r' =
     case q' of
-      Consensus.QueryHardFork Consensus.GetCurrentEra ->
-        anyEraInModeToAnyEra (fromConsensusEraIndex CardanoMode r')
+      Consensus.BlockQuery (Consensus.QueryHardFork Consensus.GetCurrentEra)
+        -> anyEraInModeToAnyEra (fromConsensusEraIndex CardanoMode r')
       _ -> fromConsensusQueryResultMismatch
 
 fromConsensusQueryResult (QueryInEra ByronEraInByronMode
                                      QueryByronUpdateState) q' r' =
     case (q', r') of
-      (Consensus.DegenQuery Consensus.GetUpdateInterfaceState,
-       Consensus.DegenQueryResult r'') ->
-        Right (ByronUpdateState r'')
+      (Consensus.BlockQuery (Consensus.DegenQuery Consensus.GetUpdateInterfaceState),
+       Consensus.DegenQueryResult r'')
+        -> Right (ByronUpdateState r'')
+      _ -> fromConsensusQueryResultMismatch
 
 fromConsensusQueryResult (QueryInEra ByronEraInCardanoMode
                                      QueryByronUpdateState) q' r' =
     case q' of
-      Consensus.QueryIfCurrentByron Consensus.GetUpdateInterfaceState ->
-        bimap fromConsensusEraMismatch ByronUpdateState r'
+      Consensus.BlockQuery
+        (Consensus.QueryIfCurrentByron Consensus.GetUpdateInterfaceState)
+        -> bimap fromConsensusEraMismatch ByronUpdateState r'
       _ -> fromConsensusQueryResultMismatch
 
 fromConsensusQueryResult (QueryInEra ByronEraInByronMode
@@ -426,8 +622,11 @@ fromConsensusQueryResult (QueryInEra ByronEraInByronMode
 fromConsensusQueryResult (QueryInEra ShelleyEraInShelleyMode
                                      (QueryInShelleyBasedEra _era q)) q' r' =
     case (q', r') of
-      (Consensus.DegenQuery q'', Consensus.DegenQueryResult r'') ->
-        Right (fromConsensusQueryResultShelleyBased ShelleyBasedEraShelley q q'' r'')
+      (Consensus.BlockQuery (Consensus.DegenQuery q''),
+       Consensus.DegenQueryResult r'')
+        -> Right (fromConsensusQueryResultShelleyBased
+                    ShelleyBasedEraShelley q q'' r'')
+      _ -> fromConsensusQueryResultMismatch
 
 fromConsensusQueryResult (QueryInEra ByronEraInCardanoMode
                                      (QueryInShelleyBasedEra era _)) _ _ =
@@ -436,48 +635,56 @@ fromConsensusQueryResult (QueryInEra ByronEraInCardanoMode
 fromConsensusQueryResult (QueryInEra ShelleyEraInCardanoMode
                                      (QueryInShelleyBasedEra _era q)) q' r' =
     case q' of
-      Consensus.QueryIfCurrentShelley q'' ->
-        bimap fromConsensusEraMismatch
-              (fromConsensusQueryResultShelleyBased ShelleyBasedEraShelley q q'')
-              r'
+      Consensus.BlockQuery (Consensus.QueryIfCurrentShelley q'')
+        -> bimap fromConsensusEraMismatch
+                 (fromConsensusQueryResultShelleyBased
+                    ShelleyBasedEraShelley q q'')
+                 r'
       _ -> fromConsensusQueryResultMismatch
 
 fromConsensusQueryResult (QueryInEra AllegraEraInCardanoMode
                                      (QueryInShelleyBasedEra _era q)) q' r' =
     case q' of
-      Consensus.QueryIfCurrentAllegra q'' ->
-        bimap fromConsensusEraMismatch
-              (fromConsensusQueryResultShelleyBased ShelleyBasedEraAllegra q q'')
-              r'
+      Consensus.BlockQuery (Consensus.QueryIfCurrentAllegra q'')
+        -> bimap fromConsensusEraMismatch
+                 (fromConsensusQueryResultShelleyBased
+                    ShelleyBasedEraAllegra q q'')
+                 r'
       _ -> fromConsensusQueryResultMismatch
 
 fromConsensusQueryResult (QueryInEra MaryEraInCardanoMode
                                      (QueryInShelleyBasedEra _era q)) q' r' =
     case q' of
-      Consensus.QueryIfCurrentMary q'' ->
-        bimap fromConsensusEraMismatch
-              (fromConsensusQueryResultShelleyBased ShelleyBasedEraMary q q'')
-              r'
+      Consensus.BlockQuery (Consensus.QueryIfCurrentMary q'')
+        -> bimap fromConsensusEraMismatch
+                 (fromConsensusQueryResultShelleyBased
+                    ShelleyBasedEraMary q q'')
+                 r'
       _ -> fromConsensusQueryResultMismatch
 
+fromConsensusQueryResult (QueryInEra AlonzoEraInCardanoMode
+                                     (QueryInShelleyBasedEra _era q)) q' r' =
+    case q' of
+      Consensus.BlockQuery (Consensus.QueryIfCurrentAlonzo q'')
+        -> bimap fromConsensusEraMismatch
+                 (fromConsensusQueryResultShelleyBased
+                    ShelleyBasedEraAlonzo q q'')
+                 r'
+      _ -> fromConsensusQueryResultMismatch
+
+fromConsensusQueryResult (QueryInEra BabbageEraInCardanoMode
+                                     (QueryInShelleyBasedEra _era _q)) _q' _r' =
+    error "TODO: Babbage era - depends on consensus exposing a babbage era"
 
 fromConsensusQueryResultShelleyBased
   :: forall era ledgerera result result'.
      ShelleyLedgerEra era ~ ledgerera
-  => Shelley.PParams ledgerera ~ Core.PParams ledgerera
-  => Shelley.PParamsDelta ledgerera ~ Shelley.PParamsUpdate ledgerera
-  => Consensus.ShelleyBasedEra ledgerera
   => Ledger.Crypto ledgerera ~ Consensus.StandardCrypto
   => ShelleyBasedEra era
   -> QueryInShelleyBasedEra era result
-  -> Consensus.Query (Consensus.ShelleyBlock ledgerera) result'
+  -> Consensus.BlockQuery (Consensus.ShelleyBlock ledgerera) result'
   -> result'
   -> result
-fromConsensusQueryResultShelleyBased _ QueryChainPoint q' point =
-    case q' of
-      Consensus.GetLedgerTip -> fromConsensusPoint point
-      _                      -> fromConsensusQueryResultMismatch
-
 fromConsensusQueryResultShelleyBased _ QueryEpoch q' epoch =
     case q' of
       Consensus.GetEpochNo -> epoch
@@ -489,14 +696,14 @@ fromConsensusQueryResultShelleyBased _ QueryGenesisParameters q' r' =
                                       (Consensus.getCompactGenesis r')
       _                          -> fromConsensusQueryResultMismatch
 
-fromConsensusQueryResultShelleyBased _ QueryProtocolParameters q' r' =
+fromConsensusQueryResultShelleyBased era QueryProtocolParameters q' r' =
     case q' of
-      Consensus.GetCurrentPParams -> fromShelleyPParams r'
+      Consensus.GetCurrentPParams -> fromLedgerPParams era r'
       _                           -> fromConsensusQueryResultMismatch
 
-fromConsensusQueryResultShelleyBased _ QueryProtocolParametersUpdate q' r' =
+fromConsensusQueryResultShelleyBased era QueryProtocolParametersUpdate q' r' =
     case q' of
-      Consensus.GetProposedPParamsUpdates -> fromShelleyProposedPPUpdates r'
+      Consensus.GetProposedPParamsUpdates -> fromLedgerProposedPPUpdates era r'
       _                                   -> fromConsensusQueryResultMismatch
 
 fromConsensusQueryResultShelleyBased _ QueryStakeDistribution q' r' =
@@ -504,15 +711,20 @@ fromConsensusQueryResultShelleyBased _ QueryStakeDistribution q' r' =
       Consensus.GetStakeDistribution -> fromShelleyPoolDistr r'
       _                              -> fromConsensusQueryResultMismatch
 
-fromConsensusQueryResultShelleyBased shelleyBasedEra' (QueryUTxO Nothing) q' utxo' =
+fromConsensusQueryResultShelleyBased era (QueryUTxO QueryUTxOWhole) q' utxo' =
     case q' of
-      Consensus.GetUTxO -> fromUTxO shelleyBasedEra' utxo'
-      _                 -> fromConsensusQueryResultMismatch
+      Consensus.GetUTxOWhole -> fromLedgerUTxO era utxo'
+      _                      -> fromConsensusQueryResultMismatch
 
-fromConsensusQueryResultShelleyBased shelleyBasedEra' (QueryUTxO Just{}) q' utxo' =
+fromConsensusQueryResultShelleyBased era (QueryUTxO QueryUTxOByAddress{}) q' utxo' =
     case q' of
-      Consensus.GetFilteredUTxO{} -> fromUTxO shelleyBasedEra' utxo'
-      _                           -> fromConsensusQueryResultMismatch
+      Consensus.GetUTxOByAddress{} -> fromLedgerUTxO era utxo'
+      _                            -> fromConsensusQueryResultMismatch
+
+fromConsensusQueryResultShelleyBased era (QueryUTxO QueryUTxOByTxIn{}) q' utxo' =
+    case q' of
+      Consensus.GetUTxOByTxIn{} -> fromLedgerUTxO era utxo'
+      _                         -> fromConsensusQueryResultMismatch
 
 fromConsensusQueryResultShelleyBased _ (QueryStakeAddresses _ nId) q' r' =
     case q' of
@@ -523,6 +735,18 @@ fromConsensusQueryResultShelleyBased _ (QueryStakeAddresses _ nId) q' r' =
               )
       _ -> fromConsensusQueryResultMismatch
 
+fromConsensusQueryResultShelleyBased _ QueryStakePools q' poolids' =
+    case q' of
+      Consensus.GetStakePools -> Set.map StakePoolKeyHash poolids'
+      _                       -> fromConsensusQueryResultMismatch
+
+fromConsensusQueryResultShelleyBased _ QueryStakePoolParameters{} q' poolparams' =
+    case q' of
+      Consensus.GetStakePoolParams{} -> Map.map fromShelleyPoolParams
+                                      . Map.mapKeysMonotonic StakePoolKeyHash
+                                      $ poolparams'
+      _                              -> fromConsensusQueryResultMismatch
+
 fromConsensusQueryResultShelleyBased _ QueryDebugLedgerState{} q' r' =
     case q' of
       Consensus.GetCBOR Consensus.DebugNewEpochState -> SerialisedDebugLedgerState r'
@@ -532,6 +756,11 @@ fromConsensusQueryResultShelleyBased _ QueryProtocolState q' r' =
     case q' of
       Consensus.GetCBOR Consensus.DebugChainDepState -> ProtocolState r'
       _                                              -> fromConsensusQueryResultMismatch
+
+fromConsensusQueryResultShelleyBased _ QueryCurrentEpochState q' r' =
+  case q' of
+    Consensus.GetCBOR Consensus.DebugEpochState -> SerialisedCurrentEpochState r'
+    _                                           -> fromConsensusQueryResultMismatch
 
 -- | This should /only/ happen if we messed up the mapping in 'toConsensusQuery'
 -- and 'fromConsensusQueryResult' so they are inconsistent with each other.

@@ -1,6 +1,7 @@
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE FlexibleInstances   #-}
+{-# LANGUAGE GADTs               #-}
+{-# LANGUAGE NamedFieldPuns      #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {-# OPTIONS_GHC -Wno-orphans  #-}
@@ -10,14 +11,12 @@ module Cardano.Node.Protocol.Cardano
 
     -- * Errors
   , CardanoProtocolInstantiationError(..)
-  , renderCardanoProtocolInstantiationError
   ) where
 
 import           Prelude
 
 import           Control.Monad.Trans.Except (ExceptT)
 import           Control.Monad.Trans.Except.Extra (firstExceptT)
-import qualified Data.Text as T
 
 import qualified Cardano.Chain.Update as Byron
 
@@ -27,7 +26,9 @@ import qualified Ouroboros.Consensus.Cardano.CanHardFork as Consensus
 import           Ouroboros.Consensus.HardFork.Combinator.Condense ()
 
 import           Ouroboros.Consensus.Cardano.Condense ()
+import qualified Ouroboros.Consensus.Mempool.TxLimits as TxLimits
 
+import           Cardano.Api
 import           Cardano.Api.Orphans ()
 import           Cardano.Api.Protocol.Types
 import           Cardano.Node.Types
@@ -35,9 +36,9 @@ import           Cardano.Node.Types
 import           Cardano.Tracing.OrphanInstances.Byron ()
 import           Cardano.Tracing.OrphanInstances.Shelley ()
 
+import qualified Cardano.Node.Protocol.Alonzo as Alonzo
 import qualified Cardano.Node.Protocol.Byron as Byron
 import qualified Cardano.Node.Protocol.Shelley as Shelley
-
 import           Cardano.Node.Protocol.Types
 
 ------------------------------------------------------------------------------
@@ -59,6 +60,7 @@ import           Cardano.Node.Protocol.Types
 mkSomeConsensusProtocolCardano
   :: NodeByronProtocolConfiguration
   -> NodeShelleyProtocolConfiguration
+  -> NodeAlonzoProtocolConfiguration
   -> NodeHardForkProtocolConfiguration
   -> Maybe ProtocolFilepaths
   -> ExceptT CardanoProtocolInstantiationError IO SomeConsensusProtocol
@@ -77,13 +79,25 @@ mkSomeConsensusProtocolCardano NodeByronProtocolConfiguration {
                              npcShelleyGenesisFile,
                              npcShelleyGenesisFileHash
                            }
+                           NodeAlonzoProtocolConfiguration {
+                             npcAlonzoGenesisFile,
+                             npcAlonzoGenesisFileHash
+                           }
                            NodeHardForkProtocolConfiguration {
+                            -- npcTestEnableDevelopmentHardForkEras,
+                            -- During testing of the Alonzo era, we conditionally declared that we
+                            -- knew about the Alonzo era. We do so only when a config option for
+                            -- testing development/unstable eras is used. This lets us include
+                            -- not-yet-ready eras in released node versions without mainnet nodes
+                            -- prematurely advertising that they could hard fork into the new era.
                              npcTestShelleyHardForkAtEpoch,
                              npcTestShelleyHardForkAtVersion,
                              npcTestAllegraHardForkAtEpoch,
                              npcTestAllegraHardForkAtVersion,
                              npcTestMaryHardForkAtEpoch,
-                             npcTestMaryHardForkAtVersion
+                             npcTestMaryHardForkAtVersion,
+                             npcTestAlonzoHardForkAtEpoch,
+                             npcTestAlonzoHardForkAtVersion
                            }
                            files = do
     byronGenesis <-
@@ -97,12 +111,17 @@ mkSomeConsensusProtocolCardano NodeByronProtocolConfiguration {
         Byron.readLeaderCredentials byronGenesis files
 
     (shelleyGenesis, shelleyGenesisHash) <-
-      firstExceptT CardanoProtocolInstantiationErrorShelley $
+      firstExceptT CardanoProtocolInstantiationShelleyGenesisReadError $
         Shelley.readGenesis npcShelleyGenesisFile
                             npcShelleyGenesisFileHash
 
+    (alonzoGenesis, _alonzoGenesisHash) <-
+      firstExceptT CardanoProtocolInstantiationAlonzoGenesisReadError $
+        Alonzo.readGenesis npcAlonzoGenesisFile
+                           npcAlonzoGenesisFileHash
+
     shelleyLeaderCredentials <-
-      firstExceptT CardanoProtocolInstantiationErrorShelley $
+      firstExceptT CardanoProtocolInstantiationPraosLeaderCredentialsError $
         Shelley.readLeaderCredentials files
 
     --TODO: all these protocol versions below are confusing and unnecessary.
@@ -132,12 +151,14 @@ mkSomeConsensusProtocolCardano NodeByronProtocolConfiguration {
               npcByronApplicationName
               npcByronApplicationVersion,
           byronLeaderCredentials =
-            byronLeaderCredentials
+            byronLeaderCredentials,
+          byronMaxTxCapacityOverrides =
+            TxLimits.mkOverrides TxLimits.noOverridesMeasure
         }
         Consensus.ProtocolParamsShelleyBased {
-          shelleyBasedGenesis = shelleyGenesis,
-          shelleyBasedInitialNonce =
-            Shelley.genesisHashToPraosNonce shelleyGenesisHash,
+          shelleyBasedGenesis           = shelleyGenesis,
+          shelleyBasedInitialNonce      = Shelley.genesisHashToPraosNonce
+                                            shelleyGenesisHash,
           shelleyBasedLeaderCredentials = shelleyLeaderCredentials
         }
         Consensus.ProtocolParamsShelley {
@@ -146,7 +167,9 @@ mkSomeConsensusProtocolCardano NodeByronProtocolConfiguration {
           -- is in the Shelley era. That is, it is the version of protocol
           -- /after/ Shelley, i.e. Allegra.
           shelleyProtVer =
-            ProtVer 3 0
+            ProtVer 3 0,
+          shelleyMaxTxCapacityOverrides =
+            TxLimits.mkOverrides TxLimits.noOverridesMeasure
         }
         Consensus.ProtocolParamsAllegra {
           -- This is /not/ the Allegra protocol version. It is the protocol
@@ -154,20 +177,34 @@ mkSomeConsensusProtocolCardano NodeByronProtocolConfiguration {
           -- is in the Allegra era. That is, it is the version of protocol
           -- /after/ Allegra, i.e. Mary.
           allegraProtVer =
-            ProtVer 4 0
+            ProtVer 4 0,
+          allegraMaxTxCapacityOverrides =
+            TxLimits.mkOverrides TxLimits.noOverridesMeasure
         }
         Consensus.ProtocolParamsMary {
           -- This is /not/ the Mary protocol version. It is the protocol
           -- version that this node will declare that it understands, when it
-          -- is in the Mary era. Since Mary is currently the last known
-          -- protocol version then this is also the Mary protocol version.
-          maryProtVer =
-            ProtVer 4 0
+          -- is in the Mary era. That is, it is the version of protocol
+          -- /after/ Mary, i.e. Alonzo.
+          maryProtVer = ProtVer 5 0,
+          maryMaxTxCapacityOverrides =
+            TxLimits.mkOverrides TxLimits.noOverridesMeasure
         }
+        Consensus.ProtocolParamsAlonzo {
+          -- This is /not/ the Alonzo protocol version. It is the protocol
+          -- version that this node will declare that it understands, when it
+          -- is in the Alonzo era. Since Alonzo is currently the last known
+          -- protocol version then this is also the Alonzo protocol version.
+          alonzoProtVer = ProtVer 6 0,
+          alonzoMaxTxCapacityOverrides =
+            TxLimits.mkOverrides TxLimits.noOverridesMeasure
+        }
+
         -- ProtocolParamsTransition specifies the parameters needed to transition between two eras
         -- The comments below also apply for the Shelley -> Allegra and Allegra -> Mary hard forks.
         -- Byron to Shelley hard fork parameters
-        Consensus.ProtocolParamsTransition {
+        Consensus.ProtocolTransitionParamsShelleyBased {
+          transitionTranslationContext = (),
           transitionTrigger =
             -- What will trigger the Byron -> Shelley hard fork?
             case npcTestShelleyHardForkAtEpoch of
@@ -180,6 +217,7 @@ mkSomeConsensusProtocolCardano NodeByronProtocolConfiguration {
                -- Version 2 is Shelley
                -- Version 3 is Allegra
                -- Version 4 is Mary
+               -- Version 5 is Alonzo
                --
                -- But we also provide an override to allow for simpler test setups
                -- such as triggering at the 0 -> 1 transition .
@@ -192,7 +230,8 @@ mkSomeConsensusProtocolCardano NodeByronProtocolConfiguration {
                Just epochNo -> Consensus.TriggerHardForkAtEpoch epochNo
         }
         -- Shelley to Allegra hard fork parameters
-        Consensus.ProtocolParamsTransition {
+        Consensus.ProtocolTransitionParamsShelleyBased {
+          transitionTranslationContext = (),
           transitionTrigger =
             case npcTestAllegraHardForkAtEpoch of
                Nothing -> Consensus.TriggerHardForkAtVersion
@@ -200,13 +239,24 @@ mkSomeConsensusProtocolCardano NodeByronProtocolConfiguration {
                Just epochNo -> Consensus.TriggerHardForkAtEpoch epochNo
         }
         -- Allegra to Mary hard fork parameters
-        Consensus.ProtocolParamsTransition {
+        Consensus.ProtocolTransitionParamsShelleyBased {
+          transitionTranslationContext = (),
           transitionTrigger =
             case npcTestMaryHardForkAtEpoch of
                Nothing -> Consensus.TriggerHardForkAtVersion
                             (maybe 4 fromIntegral npcTestMaryHardForkAtVersion)
                Just epochNo -> Consensus.TriggerHardForkAtEpoch epochNo
         }
+        -- Mary to Alonzo hard fork parameters
+        Consensus.ProtocolTransitionParamsShelleyBased {
+          transitionTranslationContext = alonzoGenesis,
+          transitionTrigger =
+            case npcTestAlonzoHardForkAtEpoch of
+               Nothing -> Consensus.TriggerHardForkAtVersion
+                            (maybe 5 fromIntegral npcTestAlonzoHardForkAtVersion)
+               Just epochNo -> Consensus.TriggerHardForkAtEpoch epochNo
+        }
+
 
 ------------------------------------------------------------------------------
 -- Errors
@@ -216,16 +266,27 @@ data CardanoProtocolInstantiationError =
        CardanoProtocolInstantiationErrorByron
          Byron.ByronProtocolInstantiationError
 
-     | CardanoProtocolInstantiationErrorShelley
-         Shelley.ShelleyProtocolInstantiationError
+     | CardanoProtocolInstantiationShelleyGenesisReadError
+         Shelley.GenesisReadError
+
+     | CardanoProtocolInstantiationAlonzoGenesisReadError
+         Shelley.GenesisReadError
+
+     | CardanoProtocolInstantiationPraosLeaderCredentialsError
+         Shelley.PraosLeaderCredentialsError
+
+     | CardanoProtocolInstantiationErrorAlonzo
+         Alonzo.AlonzoProtocolInstantiationError
   deriving Show
 
-renderCardanoProtocolInstantiationError :: CardanoProtocolInstantiationError
-                                        -> T.Text
-renderCardanoProtocolInstantiationError
-  (CardanoProtocolInstantiationErrorByron err) =
-    Byron.renderByronProtocolInstantiationError err
-
-renderCardanoProtocolInstantiationError
-  (CardanoProtocolInstantiationErrorShelley err) =
-    Shelley.renderShelleyProtocolInstantiationError err
+instance Error CardanoProtocolInstantiationError where
+  displayError (CardanoProtocolInstantiationErrorByron err) =
+    displayError err
+  displayError (CardanoProtocolInstantiationShelleyGenesisReadError err) =
+    "Shelley related: " <> displayError err
+  displayError (CardanoProtocolInstantiationAlonzoGenesisReadError err) =
+    "Alonzo related: " <> displayError err
+  displayError (CardanoProtocolInstantiationPraosLeaderCredentialsError err) =
+    displayError err
+  displayError (CardanoProtocolInstantiationErrorAlonzo err) =
+    displayError err

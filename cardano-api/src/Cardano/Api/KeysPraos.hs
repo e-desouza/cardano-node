@@ -30,10 +30,9 @@ import qualified Cardano.Crypto.DSIGN.Class as Crypto
 import qualified Cardano.Crypto.Hash.Class as Crypto
 import qualified Cardano.Crypto.KES.Class as Crypto
 import qualified Cardano.Crypto.VRF.Class as Crypto
-
-import           Ouroboros.Consensus.Shelley.Protocol.Crypto (StandardCrypto)
 import qualified Cardano.Ledger.Crypto as Shelley (KES, VRF)
-import qualified Shelley.Spec.Ledger.Keys as Shelley
+import qualified Cardano.Ledger.Keys as Shelley
+import           Cardano.Ledger.Crypto (StandardCrypto)
 
 import           Cardano.Api.HasTypeProxy
 import           Cardano.Api.Hash
@@ -42,6 +41,7 @@ import           Cardano.Api.SerialiseBech32
 import           Cardano.Api.SerialiseCBOR
 import           Cardano.Api.SerialiseRaw
 import           Cardano.Api.SerialiseTextEnvelope
+import           Cardano.Api.SerialiseUsing
 
 
 --
@@ -118,7 +118,9 @@ newtype instance Hash KesKey =
     KesKeyHash (Shelley.Hash StandardCrypto
                              (Shelley.VerKeyKES StandardCrypto))
   deriving stock (Eq, Ord)
-  deriving (Show, IsString) via UsingRawBytesHex (Hash VrfKey)
+  deriving (Show, IsString) via UsingRawBytesHex (Hash KesKey)
+  deriving (ToCBOR, FromCBOR) via UsingRawBytes (Hash KesKey)
+  deriving anyclass SerialiseAsCBOR
 
 instance SerialiseAsRawBytes (Hash KesKey) where
     serialiseToRawBytes (KesKeyHash vkh) =
@@ -213,6 +215,8 @@ newtype instance Hash VrfKey =
                              (Shelley.VerKeyVRF StandardCrypto))
   deriving stock (Eq, Ord)
   deriving (Show, IsString) via UsingRawBytesHex (Hash VrfKey)
+  deriving (ToCBOR, FromCBOR) via UsingRawBytes (Hash VrfKey)
+  deriving anyclass SerialiseAsCBOR
 
 instance SerialiseAsRawBytes (Hash VrfKey) where
     serialiseToRawBytes (VrfKeyHash vkh) =

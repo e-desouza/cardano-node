@@ -1,10 +1,11 @@
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 module Cardano.Node.Protocol.Byron
   ( mkSomeConsensusProtocolByron
     -- * Errors
   , ByronProtocolInstantiationError(..)
-  , renderByronProtocolInstantiationError
 
     -- * Reusable parts
   , readGenesis
@@ -14,7 +15,7 @@ module Cardano.Node.Protocol.Byron
 
 import           Cardano.Prelude
 import           Control.Monad.Trans.Except.Extra (bimapExceptT, firstExceptT, hoistEither,
-                     hoistMaybe, left)
+                   hoistMaybe, left)
 import qualified Data.ByteString.Lazy as LB
 import qualified Data.Text as Text
 
@@ -26,19 +27,24 @@ import qualified Cardano.Crypto.Hash as Crypto
 import qualified Cardano.Crypto.Hashing as Byron.Crypto
 
 import qualified Cardano.Chain.Genesis as Genesis
-import qualified Cardano.Chain.Update as Update
 import qualified Cardano.Chain.UTxO as UTxO
+import qualified Cardano.Chain.Update as Update
 import           Cardano.Crypto.ProtocolMagic (RequiresNetworkMagic)
 
+import           Cardano.Node.Types
 import           Ouroboros.Consensus.Cardano
 import qualified Ouroboros.Consensus.Cardano as Consensus
-
-import           Cardano.Node.Types
-
-import           Cardano.Tracing.OrphanInstances.Byron ()
-import           Cardano.Tracing.OrphanInstances.HardFork ()
+import qualified Ouroboros.Consensus.Mempool.TxLimits as TxLimits
 
 import           Cardano.Node.Protocol.Types
+import           Cardano.Tracing.OrphanInstances.Byron ()
+import           Cardano.Tracing.OrphanInstances.HardFork ()
+import           Cardano.Tracing.OrphanInstances.Shelley ()
+
+import           Cardano.Node.Tracing.Era.Byron ()
+import           Cardano.Node.Tracing.Era.HardFork ()
+import           Cardano.Node.Tracing.Tracers.ChainDB ()
+
 
 
 ------------------------------------------------------------------------------
@@ -88,7 +94,9 @@ mkSomeConsensusProtocolByron NodeByronProtocolConfiguration {
             npcByronApplicationName
             npcByronApplicationVersion,
         byronLeaderCredentials =
-          optionalLeaderCredentials
+          optionalLeaderCredentials,
+        byronMaxTxCapacityOverrides =
+          TxLimits.mkOverrides TxLimits.noOverridesMeasure
         }
 
 readGenesis :: GenesisFile
@@ -177,23 +185,27 @@ data ByronProtocolInstantiationError =
   | SigningKeyFilepathNotSpecified
   deriving Show
 
-
-renderByronProtocolInstantiationError :: ByronProtocolInstantiationError -> Text
-renderByronProtocolInstantiationError pie =
-  case pie of
-    CanonicalDecodeFailure fp failure -> "Canonical decode failure in " <> toS fp
-                                         <> " Canonical failure: " <> failure
-    GenesisHashMismatch actual expected ->
+instance Error ByronProtocolInstantiationError where
+  displayError (CanonicalDecodeFailure fp failure) =
+        "Canonical decode failure in " <> fp
+     <> " Canonical failure: " <> Text.unpack failure
+  displayError (GenesisHashMismatch actual expected) =
         "Wrong Byron genesis file: the actual hash is " <> show actual
      <> ", but the expected Byron genesis hash given in the node configuration "
      <> "file is " <> show expected
-    DelegationCertificateFilepathNotSpecified -> "Delegation certificate filepath not specified"
+  displayError DelegationCertificateFilepathNotSpecified =
+        "Delegation certificate filepath not specified"
     --TODO: Implement configuration error render function in cardano-ledger
-    GenesisConfigurationError fp genesisConfigError -> "Genesis configuration error in: " <> toS fp
-                                                       <> " Error: " <> Text.pack (show genesisConfigError)
-    GenesisReadError fp err ->  "There was an error parsing the genesis file: " <> toS fp
-                                <> " Error: " <> Text.pack (show err)
+  displayError (GenesisConfigurationError fp genesisConfigError) =
+        "Genesis configuration error in: " <> toS fp
+     <> " Error: " <> show genesisConfigError
+  displayError (GenesisReadError fp err) =
+        "There was an error parsing the genesis file: " <> toS fp
+     <> " Error: " <> show err
     -- TODO: Implement ByronLeaderCredentialsError render function in ouroboros-network
-    CredentialsError byronLeaderCredentialsError -> "Byron leader credentials error: " <> Text.pack (show byronLeaderCredentialsError)
-    SigningKeyDeserialiseFailure fp -> "Signing key deserialisation error in: " <> toS fp
-    SigningKeyFilepathNotSpecified -> "Signing key filepath not specified"
+  displayError (CredentialsError byronLeaderCredentialsError) =
+        "Byron leader credentials error: " <> show byronLeaderCredentialsError
+  displayError (SigningKeyDeserialiseFailure fp) =
+        "Signing key deserialisation error in: " <> toS fp
+  displayError SigningKeyFilepathNotSpecified =
+        "Signing key filepath not specified"

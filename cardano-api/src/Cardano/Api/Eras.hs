@@ -1,4 +1,5 @@
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -12,6 +13,8 @@ module Cardano.Api.Eras
   , ShelleyEra
   , AllegraEra
   , MaryEra
+  , AlonzoEra
+  , BabbageEra
   , CardanoEra(..)
   , IsCardanoEra(..)
   , AnyCardanoEra(..)
@@ -23,11 +26,13 @@ module Cardano.Api.Eras
   , Shelley
   , Allegra
   , Mary
+  , Babbage
 
     -- * Shelley-based eras
   , ShelleyBasedEra(..)
   , IsShelleyBasedEra(..)
   , InAnyShelleyBasedEra(..)
+  , shelleyBasedToCardanoEra
 
     -- ** Mapping to era types from the Shelley ledger library
   , ShelleyLedgerEra
@@ -37,19 +42,20 @@ module Cardano.Api.Eras
   , cardanoEraStyle
 
     -- * Data family instances
-  , AsType(AsByronEra, AsShelleyEra, AsAllegraEra, AsMaryEra,
-           AsByron,    AsShelley,    AsAllegra,    AsMary)
+  , AsType(AsByronEra, AsShelleyEra, AsAllegraEra, AsMaryEra, AsAlonzoEra, AsBabbageEra,
+           AsByron,    AsShelley,    AsAllegra,    AsMary,    AsAlonzo,    AsBabbage)
   ) where
 
 import           Prelude
 
-import           Data.Aeson (ToJSON, toJSON)
+import           Data.Aeson (FromJSON (..), ToJSON, toJSON, withText)
+import qualified Data.Text as Text
 import           Data.Type.Equality (TestEquality (..), (:~:) (Refl))
 
-import           Cardano.Ledger.Era as Ledger (Crypto)
+import           Ouroboros.Consensus.Shelley.Eras as Consensus (StandardAllegra, StandardAlonzo,
+                   StandardCrypto, StandardMary, StandardShelley)
 
-import           Ouroboros.Consensus.Shelley.Eras as Ledger (StandardAllegra, StandardCrypto,
-                   StandardMary, StandardShelley)
+import qualified Cardano.Ledger.Babbage as Babbage
 
 import           Cardano.Api.HasTypeProxy
 
@@ -65,6 +71,12 @@ data AllegraEra
 
 -- | A type used as a tag to distinguish the Mary era.
 data MaryEra
+
+-- | A type used as a tag to distinguish the Alonzo era.
+data AlonzoEra
+
+-- | A type used as a tag to distinguish the Babbage era.
+data BabbageEra
 
 instance HasTypeProxy ByronEra where
     data AsType ByronEra = AsByronEra
@@ -82,6 +94,13 @@ instance HasTypeProxy MaryEra where
     data AsType MaryEra = AsMaryEra
     proxyToAsType _ = AsMaryEra
 
+instance HasTypeProxy AlonzoEra where
+    data AsType AlonzoEra = AsAlonzoEra
+    proxyToAsType _ = AsAlonzoEra
+
+instance HasTypeProxy BabbageEra where
+   data AsType BabbageEra = AsBabbageEra
+   proxyToAsType _ = AsBabbageEra
 
 -- ----------------------------------------------------------------------------
 -- Deprecated aliases
@@ -91,6 +110,7 @@ type Byron   = ByronEra
 type Shelley = ShelleyEra
 type Allegra = AllegraEra
 type Mary    = MaryEra
+type Babbage = BabbageEra
 
 {-# DEPRECATED Byron   "Use 'ByronEra' or 'ByronAddr' as appropriate" #-}
 {-# DEPRECATED Shelley "Use 'ShelleyEra' or 'ShelleyAddr' as appropriate" #-}
@@ -108,6 +128,13 @@ pattern AsAllegra  = AsAllegraEra
 
 pattern AsMary    :: AsType MaryEra
 pattern AsMary     = AsMaryEra
+
+
+pattern AsAlonzo  :: AsType AlonzoEra
+pattern AsAlonzo   = AsAlonzoEra
+
+pattern AsBabbage :: AsType BabbageEra
+pattern AsBabbage  = AsBabbageEra
 
 {-# DEPRECATED AsByron   "Use 'AsByronEra' instead" #-}
 {-# DEPRECATED AsShelley "Use 'AsShelleyEra' instead" #-}
@@ -133,6 +160,9 @@ data CardanoEra era where
      ShelleyEra :: CardanoEra ShelleyEra
      AllegraEra :: CardanoEra AllegraEra
      MaryEra    :: CardanoEra MaryEra
+     AlonzoEra  :: CardanoEra AlonzoEra
+     BabbageEra :: CardanoEra BabbageEra
+     -- when you add era here, change `instance Bounded AnyCardanoEra`
 
 deriving instance Eq   (CardanoEra era)
 deriving instance Ord  (CardanoEra era)
@@ -143,12 +173,16 @@ instance ToJSON (CardanoEra era) where
    toJSON ShelleyEra = "Shelley"
    toJSON AllegraEra = "Allegra"
    toJSON MaryEra    = "Mary"
+   toJSON AlonzoEra  = "Alonzo"
+   toJSON BabbageEra = "Babbage"
 
 instance TestEquality CardanoEra where
     testEquality ByronEra   ByronEra   = Just Refl
     testEquality ShelleyEra ShelleyEra = Just Refl
     testEquality AllegraEra AllegraEra = Just Refl
     testEquality MaryEra    MaryEra    = Just Refl
+    testEquality AlonzoEra  AlonzoEra  = Just Refl
+    testEquality BabbageEra BabbageEra = Just Refl
     testEquality _          _          = Nothing
 
 
@@ -171,6 +205,12 @@ instance IsCardanoEra AllegraEra where
 instance IsCardanoEra MaryEra where
    cardanoEra      = MaryEra
 
+instance IsCardanoEra AlonzoEra where
+   cardanoEra      = AlonzoEra
+
+instance IsCardanoEra BabbageEra where
+   cardanoEra      = BabbageEra
+
 
 data AnyCardanoEra where
      AnyCardanoEra :: IsCardanoEra era  -- Provide class constraint
@@ -185,8 +225,49 @@ instance Eq AnyCardanoEra where
         Nothing   -> False
         Just Refl -> True -- since no constructors share types
 
+instance Bounded AnyCardanoEra where
+   minBound = AnyCardanoEra ByronEra
+   maxBound = AnyCardanoEra BabbageEra
+
+instance Enum AnyCardanoEra where
+
+   -- [e..] = [e..maxBound]
+   enumFrom e = enumFromTo e maxBound
+
+   fromEnum = \case
+      AnyCardanoEra ByronEra    -> 0
+      AnyCardanoEra ShelleyEra  -> 1
+      AnyCardanoEra AllegraEra  -> 2
+      AnyCardanoEra MaryEra     -> 3
+      AnyCardanoEra AlonzoEra   -> 4
+      AnyCardanoEra BabbageEra  -> 5
+
+   toEnum = \case
+      0 -> AnyCardanoEra ByronEra
+      1 -> AnyCardanoEra ShelleyEra
+      2 -> AnyCardanoEra AllegraEra
+      3 -> AnyCardanoEra MaryEra
+      4 -> AnyCardanoEra AlonzoEra
+      5 -> AnyCardanoEra BabbageEra
+      n ->
+         error $
+            "AnyCardanoEra.toEnum: " <> show n
+            <> " does not correspond to any known enumerated era."
+
 instance ToJSON AnyCardanoEra where
    toJSON (AnyCardanoEra era) = toJSON era
+
+instance FromJSON AnyCardanoEra where
+   parseJSON = withText "AnyCardanoEra"
+     $ \case
+        "Byron" -> pure $ AnyCardanoEra ByronEra
+        "Shelley" -> pure $ AnyCardanoEra ShelleyEra
+        "Allegra" -> pure $ AnyCardanoEra AllegraEra
+        "Mary" -> pure $ AnyCardanoEra MaryEra
+        "Alonzo" -> pure $ AnyCardanoEra AlonzoEra
+        "Babbage" -> pure $ AnyCardanoEra BabbageEra
+        wrong -> fail $ "Failed to parse unknown era: " <> Text.unpack wrong
+
 
 -- | Like the 'AnyCardanoEra' constructor but does not demand a 'IsCardanoEra'
 -- class constraint.
@@ -196,7 +277,8 @@ anyCardanoEra ByronEra   = AnyCardanoEra ByronEra
 anyCardanoEra ShelleyEra = AnyCardanoEra ShelleyEra
 anyCardanoEra AllegraEra = AnyCardanoEra AllegraEra
 anyCardanoEra MaryEra    = AnyCardanoEra MaryEra
-
+anyCardanoEra AlonzoEra  = AnyCardanoEra AlonzoEra
+anyCardanoEra BabbageEra = AnyCardanoEra BabbageEra
 
 -- | This pairs up some era-dependent type with a 'CardanoEra' value that tells
 -- us what era it is, but hides the era type. This is useful when the era is
@@ -225,6 +307,8 @@ data ShelleyBasedEra era where
      ShelleyBasedEraShelley :: ShelleyBasedEra ShelleyEra
      ShelleyBasedEraAllegra :: ShelleyBasedEra AllegraEra
      ShelleyBasedEraMary    :: ShelleyBasedEra MaryEra
+     ShelleyBasedEraAlonzo  :: ShelleyBasedEra AlonzoEra
+     ShelleyBasedEraBabbage :: ShelleyBasedEra BabbageEra
 
 deriving instance Eq   (ShelleyBasedEra era)
 deriving instance Ord  (ShelleyBasedEra era)
@@ -234,8 +318,7 @@ deriving instance Show (ShelleyBasedEra era)
 -- of Shelley-based eras, but also non-uniform by making case distinctions on
 -- the 'ShelleyBasedEra' constructors.
 --
-class (IsCardanoEra era, Ledger.Crypto (ShelleyLedgerEra era) ~ StandardCrypto)
-   => IsShelleyBasedEra era where
+class IsCardanoEra era => IsShelleyBasedEra era where
    shelleyBasedEra :: ShelleyBasedEra era
 
 instance IsShelleyBasedEra ShelleyEra where
@@ -247,6 +330,12 @@ instance IsShelleyBasedEra AllegraEra where
 instance IsShelleyBasedEra MaryEra where
    shelleyBasedEra = ShelleyBasedEraMary
 
+instance IsShelleyBasedEra AlonzoEra where
+   shelleyBasedEra = ShelleyBasedEraAlonzo
+
+
+instance IsShelleyBasedEra BabbageEra where
+   shelleyBasedEra = ShelleyBasedEraBabbage
 
 -- | This pairs up some era-dependent type with a 'ShelleyBasedEra' value that
 -- tells us what era it is, but hides the era type. This is useful when the era
@@ -258,6 +347,14 @@ data InAnyShelleyBasedEra thing where
                           -> thing era
                           -> InAnyShelleyBasedEra thing
 
+
+-- | Converts a 'ShelleyBasedEra' to the broader 'CardanoEra'.
+shelleyBasedToCardanoEra :: ShelleyBasedEra era -> CardanoEra era
+shelleyBasedToCardanoEra ShelleyBasedEraShelley = ShelleyEra
+shelleyBasedToCardanoEra ShelleyBasedEraAllegra = AllegraEra
+shelleyBasedToCardanoEra ShelleyBasedEraMary    = MaryEra
+shelleyBasedToCardanoEra ShelleyBasedEraAlonzo  = AlonzoEra
+shelleyBasedToCardanoEra ShelleyBasedEraBabbage = BabbageEra
 
 -- ----------------------------------------------------------------------------
 -- Cardano eras factored as Byron vs Shelley-based
@@ -288,6 +385,8 @@ cardanoEraStyle ByronEra   = LegacyByronEra
 cardanoEraStyle ShelleyEra = ShelleyBasedEra ShelleyBasedEraShelley
 cardanoEraStyle AllegraEra = ShelleyBasedEra ShelleyBasedEraAllegra
 cardanoEraStyle MaryEra    = ShelleyBasedEra ShelleyBasedEraMary
+cardanoEraStyle AlonzoEra  = ShelleyBasedEra ShelleyBasedEraAlonzo
+cardanoEraStyle BabbageEra = ShelleyBasedEra ShelleyBasedEraBabbage
 
 
 -- ----------------------------------------------------------------------------
@@ -303,6 +402,10 @@ cardanoEraStyle MaryEra    = ShelleyBasedEra ShelleyBasedEraMary
 --
 type family ShelleyLedgerEra era where
 
-  ShelleyLedgerEra ShelleyEra = Ledger.StandardShelley
-  ShelleyLedgerEra AllegraEra = Ledger.StandardAllegra
-  ShelleyLedgerEra MaryEra    = Ledger.StandardMary
+  ShelleyLedgerEra ShelleyEra = Consensus.StandardShelley
+  ShelleyLedgerEra AllegraEra = Consensus.StandardAllegra
+  ShelleyLedgerEra MaryEra    = Consensus.StandardMary
+  ShelleyLedgerEra AlonzoEra  = Consensus.StandardAlonzo
+  --TODO: Babbage era - depends on consensus exposing a babbage era
+  ShelleyLedgerEra BabbageEra = Babbage.BabbageEra StandardCrypto
+

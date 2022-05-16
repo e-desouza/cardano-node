@@ -4,6 +4,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE ViewPatterns #-}
 
 -- | Currency values
 --
@@ -13,6 +14,7 @@ module Cardano.Api.Value
     -- * Multi-asset values
   , Quantity(..)
   , PolicyId(..)
+  , scriptPolicyId
   , AssetName(..)
   , AssetId(..)
   , Value
@@ -36,6 +38,10 @@ module Cardano.Api.Value
   , valueToNestedRep
   , valueFromNestedRep
 
+    -- ** Rendering
+  , renderValue
+  , renderValuePretty
+
     -- * Internal conversion functions
   , toByronLovelace
   , fromByronLovelace
@@ -51,13 +57,14 @@ module Cardano.Api.Value
 
 import           Prelude
 
-import           Data.Aeson hiding (Value)
+import           Data.Aeson (FromJSON, FromJSONKey, ToJSON, object, parseJSON, toJSON, withObject)
 import qualified Data.Aeson as Aeson
-import           Data.Aeson.Types (Parser, toJSONKeyText)
+import qualified Data.Aeson.Key as Aeson
+import qualified Data.Aeson.KeyMap as KeyMap
+import           Data.Aeson.Types (Parser, ToJSONKey)
 import           Data.ByteString (ByteString)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
-import qualified Data.HashMap.Strict as HashMap
 import qualified Data.Map.Merge.Strict as Map
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -67,16 +74,18 @@ import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 
 import qualified Cardano.Chain.Common as Byron
-
 import qualified Cardano.Ledger.Coin as Shelley
+import           Cardano.Ledger.Crypto (StandardCrypto)
 import qualified Cardano.Ledger.Mary.Value as Mary
 import qualified Cardano.Ledger.ShelleyMA.Rules.Utxo as Shelley
 
-import           Ouroboros.Consensus.Shelley.Protocol.Crypto (StandardCrypto)
-
+import           Cardano.Api.Error (displayError)
 import           Cardano.Api.HasTypeProxy
 import           Cardano.Api.Script
+import           Cardano.Api.SerialiseCBOR
 import           Cardano.Api.SerialiseRaw
+import           Cardano.Api.SerialiseUsing
+import           Cardano.Api.Utils (failEitherWith)
 
 
 -- ----------------------------------------------------------------------------
@@ -84,8 +93,8 @@ import           Cardano.Api.SerialiseRaw
 --
 
 newtype Lovelace = Lovelace Integer
-  deriving stock (Show)
-  deriving newtype (Eq, Ord, Enum, Num, ToJSON, FromJSON)
+  deriving stock (Eq, Ord, Show)
+  deriving newtype (Enum, Num, ToJSON, FromJSON, ToCBOR, FromCBOR)
 
 instance Semigroup Lovelace where
   Lovelace a <> Lovelace b = Lovelace (a + b)
@@ -136,7 +145,7 @@ quantityToLovelace (Quantity x) = Lovelace x
 
 newtype PolicyId = PolicyId ScriptHash
   deriving stock (Eq, Ord)
-  deriving (Show, IsString) via UsingRawBytesHex PolicyId
+  deriving (Show, IsString, ToJSON, FromJSON) via UsingRawBytesHex PolicyId
 
 instance HasTypeProxy PolicyId where
     data AsType PolicyId = AsPolicyId
@@ -147,9 +156,15 @@ instance SerialiseAsRawBytes PolicyId where
     deserialiseFromRawBytes AsPolicyId bs =
       PolicyId <$> deserialiseFromRawBytes AsScriptHash bs
 
+scriptPolicyId :: Script lang -> PolicyId
+scriptPolicyId = PolicyId . hashScript
+
+
 newtype AssetName = AssetName ByteString
-    deriving stock (Eq, Ord)
-    deriving newtype (Show)
+  deriving stock (Eq, Ord)
+  deriving newtype (Show)
+  deriving (ToJSON, FromJSON, ToJSONKey, FromJSONKey)
+    via UsingRawBytesHex AssetName
 
 instance IsString AssetName where
     fromString s
@@ -166,18 +181,6 @@ instance SerialiseAsRawBytes AssetName where
     deserialiseFromRawBytes AsAssetName bs
       | BS.length bs <= 32 = Just (AssetName bs)
       | otherwise          = Nothing
-
-instance ToJSON AssetName where
-  toJSON (AssetName an) = Aeson.String $ Text.decodeUtf8 an
-
-instance FromJSON AssetName where
-  parseJSON = withText "AssetName" (return . AssetName . Text.encodeUtf8)
-
-instance ToJSONKey AssetName where
-  toJSONKey = toJSONKeyText (\(AssetName asset) -> Text.decodeUtf8 asset)
-
-instance FromJSONKey AssetName where
-  fromJSONKey = FromJSONKeyText (AssetName . Text.encodeUtf8)
 
 
 data AssetId = AdaAssetId
@@ -344,23 +347,59 @@ valueFromNestedRep (ValueNestedRep bundles) =
 instance ToJSON ValueNestedRep where
   toJSON (ValueNestedRep bundles) = object $ map toPair bundles
     where
-     toPair :: ValueNestedBundle -> (Text, Aeson.Value)
+     toPair :: ValueNestedBundle -> (Aeson.Key, Aeson.Value)
      toPair (ValueNestedBundleAda q) = ("lovelace", toJSON q)
-     toPair (ValueNestedBundle pid assets) = (renderPolicyId pid, toJSON assets)
-
-     renderPolicyId :: PolicyId -> Text
-     renderPolicyId (PolicyId sh) = serialiseToRawBytesHexText sh
+     toPair (ValueNestedBundle pid assets) = (Aeson.fromText $ renderPolicyId pid, toJSON assets)
 
 instance FromJSON ValueNestedRep where
   parseJSON =
       withObject "ValueNestedRep" $ \obj ->
         ValueNestedRep <$> sequenceA [ parsePid keyValTuple
-                                   | keyValTuple <- HashMap.toList obj ]
+                                   | keyValTuple <- KeyMap.toList obj ]
     where
-      parsePid :: (Text, Aeson.Value) -> Parser ValueNestedBundle
+      parsePid :: (Aeson.Key, Aeson.Value) -> Parser ValueNestedBundle
       parsePid ("lovelace", q) = ValueNestedBundleAda <$> parseJSON q
-      parsePid (pid, q) =
-        case deserialiseFromRawBytesHex AsScriptHash (Text.encodeUtf8 pid) of
-          Just sHash -> ValueNestedBundle (PolicyId sHash) <$> parseJSON q
-          Nothing -> fail $ "Failure when deserialising PolicyId: "
-                         <> Text.unpack pid
+      parsePid (Aeson.toText -> pid, quantityBundleJson) = do
+        sHash <-
+          failEitherWith
+            (\e -> "Failure when deserialising PolicyId: " ++ displayError e) $
+          deserialiseFromRawBytesHex AsScriptHash $ Text.encodeUtf8 pid
+        ValueNestedBundle (PolicyId sHash) <$> parseJSON quantityBundleJson
+
+-- ----------------------------------------------------------------------------
+-- Printing and pretty-printing
+--
+
+-- | Render a textual representation of a 'Value'.
+--
+renderValue :: Value -> Text
+renderValue  v =
+    Text.intercalate
+      " + "
+      (map renderAssetIdQuantityPair vals)
+  where
+    vals :: [(AssetId, Quantity)]
+    vals = valueToList v
+
+-- | Render a \"prettified\" textual representation of a 'Value'.
+renderValuePretty :: Value -> Text
+renderValuePretty v =
+    Text.intercalate
+      ("\n" <> Text.replicate 4 " " <> "+ ")
+      (map renderAssetIdQuantityPair vals)
+  where
+    vals :: [(AssetId, Quantity)]
+    vals = valueToList v
+
+renderAssetIdQuantityPair :: (AssetId, Quantity) -> Text
+renderAssetIdQuantityPair (aId, quant) =
+  Text.pack (show quant) <> " " <> renderAssetId aId
+
+renderPolicyId :: PolicyId -> Text
+renderPolicyId (PolicyId scriptHash) = serialiseToRawBytesHexText scriptHash
+
+renderAssetId :: AssetId -> Text
+renderAssetId AdaAssetId = "lovelace"
+renderAssetId (AssetId polId (AssetName "")) = renderPolicyId polId
+renderAssetId (AssetId polId assetName) =
+  renderPolicyId polId <> "." <> serialiseToRawBytesHexText assetName

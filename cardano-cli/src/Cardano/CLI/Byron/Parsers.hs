@@ -54,10 +54,11 @@ import           Cardano.Chain.Update (ApplicationName (..), InstallerHash (..),
                    ProtocolVersion (..), SoftforkRule (..), SoftwareVersion (..), SystemTag (..),
                    checkApplicationName, checkSystemTag)
 
-import           Cardano.Api hiding (UpdateProposal)
-import           Cardano.Api.Byron (Address (..), ByronProtocolParametersUpdate (..), Lovelace (..),
+import           Cardano.Api hiding (GenesisParameters, UpdateProposal)
+import           Cardano.Api.Byron (Address (..), ByronProtocolParametersUpdate (..),
                    toByronLovelace)
 
+import           Cardano.Api.Shelley (ReferenceScript (ReferenceScriptNone))
 import           Cardano.CLI.Byron.Commands
 import           Cardano.CLI.Byron.Genesis
 import           Cardano.CLI.Byron.Key
@@ -278,18 +279,19 @@ parseTxIdAtto :: Atto.Parser TxId
 parseTxIdAtto = (<?> "Transaction ID (hexadecimal)") $ do
   bstr <- Atto.takeWhile1 Char.isHexDigit
   case deserialiseFromRawBytesHex AsTxId bstr of
-    Just addr -> return addr
-    Nothing -> fail $ "Incorrect transaction id format:: " ++ show bstr
+    Right addr -> return addr
+    Left e -> fail $ "Incorrect transaction id format: " ++ displayError e
 
 parseTxIxAtto :: Atto.Parser TxIx
 parseTxIxAtto = toEnum <$> Atto.decimal
 
-parseTxOut :: Parser (TxOut ByronEra)
+parseTxOut :: Parser (TxOut CtxTx ByronEra)
 parseTxOut =
   option
-    ( uncurry TxOut
-      . first pAddressInEra
-      . second pLovelaceTxOut
+    ( (\(addr, lovelace) -> TxOut (pAddressInEra addr)
+                                  (pLovelaceTxOut lovelace)
+                                  TxOutDatumNone
+                                  ReferenceScriptNone)
       <$> auto
     )
     $ long "txout"
@@ -507,9 +509,9 @@ parseMpcThd =
 
 parseProtocolVersion :: Parser ProtocolVersion
 parseProtocolVersion =
-  ProtocolVersion <$> (parseWord "protocol-version-major" "Protocol verson major." "WORD16" :: Parser Word16)
-                  <*> (parseWord "protocol-version-minor" "Protocol verson minor." "WORD16" :: Parser Word16)
-                  <*> (parseWord "protocol-version-alt" "Protocol verson alt." "WORD8" :: Parser Word8)
+  ProtocolVersion <$> (parseWord "protocol-version-major" "Protocol version major." "WORD16" :: Parser Word16)
+                  <*> (parseWord "protocol-version-minor" "Protocol version minor." "WORD16" :: Parser Word16)
+                  <*> (parseWord "protocol-version-alt" "Protocol version alt." "WORD8" :: Parser Word8)
 
 parseHeavyDelThd :: Parser Byron.LovelacePortion
 parseHeavyDelThd =
@@ -741,15 +743,6 @@ readDouble = do
   when (f < 0) $ readerError "fraction must be >= 0"
   when (f > 1) $ readerError "fraction must be <= 1"
   return f
-
-parseFilePath :: String -> String -> Parser FilePath
-parseFilePath optname desc =
-  strOption
-    ( long optname
-    <> metavar "FILEPATH"
-    <> help desc
-    <> completer (bashCompleter "file")
-    )
 
 parseSigningKeyFile :: String -> String -> Parser SigningKeyFile
 parseSigningKeyFile opt desc = SigningKeyFile <$> parseFilePath opt desc

@@ -4,7 +4,8 @@
 ##  - genesis
 ##  - generator
 ##  - node
-##  - tolerances (ranges of acceptable properties, given above parameters)
+##  - analysis (properties relevant to analysis)
+##  - derived  (properties derived from all above)
 ##
 ## When combined with cluster composition (an extract from topology, see the
 ## definition below) and service parameters (non-crucial things like state directory,
@@ -16,10 +17,10 @@
 ##  - era-dependent defaults for the aforementioned sections:
 ##    - profiles/defaults.jq
 ##
-##  - overlayed with generated profile variants + ad-hoc profiles:
+##  - overlaid with generated profile variants + ad-hoc profiles:
 ##    - profiles/variants.jq and profiles/adhoc.jq
 ##
-##  - each then further overlayed with derived parameters, computed from the above:
+##  - each then further overlaid with derived parameters, computed from the above:
 ##    - profiles/derived.jq
 ##
 ## Profiles variants are generated as a cartesian product of variations
@@ -84,7 +85,9 @@ def profiles($era; $mcompo; $topo; $extra_profiles):
   | map (## Assemble into a dictionary..
            { "\(.name)":
                ## ..and cleanup:
-               . | delpaths ([["generator", "epochs"]])})
+               .
+               # | delpaths ([["generator", "epochs"]])
+           })
   | add;
 
 def profile_names($era; $mcompo; $topo; $extra_profiles):

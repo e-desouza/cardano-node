@@ -1,8 +1,10 @@
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -15,10 +17,12 @@ module Cardano.Api.Block (
     -- * Blocks in the context of an era
     Block(.., Block),
     BlockHeader(..),
+    getBlockHeader,
 
     -- ** Blocks in the context of a consensus mode
     BlockInMode(..),
     fromConsensusBlock,
+    toConsensusBlock,
 
     -- * Points on the chain
     ChainPoint(..),
@@ -28,6 +32,7 @@ module Cardano.Api.Block (
     fromConsensusPoint,
     toConsensusPointInMode,
     fromConsensusPointInMode,
+    toConsensusPointHF,
 
     -- * Tip of the chain
     ChainTip(..),
@@ -37,20 +42,23 @@ module Cardano.Api.Block (
 
     -- * Data family instances
     Hash(..),
+
+    chainPointToHeaderHash,
+    chainPointToSlotNo,
+    makeChainTip,
   ) where
 
 import           Prelude
 
-import           Data.Aeson (ToJSON (..), object, (.=))
+import           Data.Aeson (FromJSON (..), ToJSON (..), object, (.=))
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Short as SBS
 import           Data.Foldable (Foldable (toList))
+import           Data.String (IsString)
 
 import           Cardano.Slotting.Block (BlockNo)
-import           Cardano.Slotting.Slot (EpochNo, SlotNo)
-
-import qualified Ouroboros.Network.Block as Consensus
+import           Cardano.Slotting.Slot (EpochNo, SlotNo, WithOrigin (..))
 
 import qualified Cardano.Crypto.Hash.Class
 import qualified Cardano.Crypto.Hashing
@@ -62,24 +70,25 @@ import qualified Ouroboros.Consensus.HardFork.Combinator as Consensus
 import qualified Ouroboros.Consensus.HardFork.Combinator.Degenerate as Consensus
 import qualified Ouroboros.Consensus.Shelley.Ledger as Consensus
 import qualified Ouroboros.Consensus.Shelley.ShelleyHFC as Consensus
+import qualified Ouroboros.Network.Block as Consensus
 
 import qualified Cardano.Chain.Block as Byron
 import qualified Cardano.Chain.UTxO as Byron
-import qualified Cardano.Ledger.Core as Core
+import qualified Cardano.Ledger.Block as Ledger
 import qualified Cardano.Ledger.Era as Ledger
-import           Cardano.Ledger.SafeHash (SafeToHash)
-
-import qualified Shelley.Spec.Ledger.BlockChain as Shelley
+import qualified Cardano.Protocol.TPraos.BHeader as TPraos
 
 import           Cardano.Api.Eras
 import           Cardano.Api.HasTypeProxy
 import           Cardano.Api.Hash
+import           Cardano.Api.KeysShelley
 import           Cardano.Api.Modes
 import           Cardano.Api.SerialiseRaw
+import           Cardano.Api.SerialiseUsing
 import           Cardano.Api.Tx
 
-{-# ANN module ("HLint: ignore Use lambda" :: String) #-}
-
+{- HLINT ignore "Use lambda" -}
+{- HLINT ignore "Use lambda-case" -}
 
 -- ----------------------------------------------------------------------------
 -- Blocks in an era
@@ -132,6 +141,18 @@ instance Show (Block era) where
         . showsPrec 11 block
         )
 
+    showsPrec p (ShelleyBlock ShelleyBasedEraAlonzo block) =
+      showParen (p >= 11)
+        ( showString "ShelleyBlock ShelleyBasedEraAlonzo "
+        . showsPrec 11 block
+        )
+
+    showsPrec p (ShelleyBlock ShelleyBasedEraBabbage _block) =
+      showParen (p >= 11)
+        ( showString "ShelleyBlock ShelleyBasedEraBabbage "
+        . error "TODO: Babbage era - depends on consensus exposing a babbage era" --showsPrec 11 block
+        )
+
 getBlockTxs :: forall era . Block era -> [Tx era]
 getBlockTxs (ByronBlock Consensus.ByronBlock { Consensus.byronBlockRaw }) =
     case byronBlockRaw of
@@ -142,16 +163,32 @@ getBlockTxs (ByronBlock Consensus.ByronBlock { Consensus.byronBlockRaw }) =
               Byron.bodyTxPayload = Byron.ATxPayload txs
             }
         } -> map ByronTx txs
-getBlockTxs (ShelleyBlock shelleyEra Consensus.ShelleyBlock{Consensus.shelleyBlockRaw})
-  = case shelleyEra of
-      ShelleyBasedEraShelley -> go
-      ShelleyBasedEraAllegra -> go
-      ShelleyBasedEraMary    -> go
-  where
-    go :: Ledger.TxSeq (ShelleyLedgerEra era) ~ Shelley.TxSeq (ShelleyLedgerEra era)
-       => SafeToHash (Core.Witnesses (ShelleyLedgerEra era))
-       => Consensus.ShelleyBasedEra (ShelleyLedgerEra era) => [Tx era]
-    go = case shelleyBlockRaw of Shelley.Block _header (Shelley.TxSeq txs) -> [ShelleyTx shelleyEra x | x <- toList txs]
+getBlockTxs (ShelleyBlock era Consensus.ShelleyBlock{Consensus.shelleyBlockRaw}) =
+    obtainConsensusShelleyBasedEra era $
+      getShelleyBlockTxs era shelleyBlockRaw
+
+getShelleyBlockTxs :: forall era ledgerera.
+                      ledgerera ~ ShelleyLedgerEra era
+                   => Consensus.ShelleyBasedEra ledgerera
+                   => ShelleyBasedEra era
+                   -> Ledger.Block (TPraos.BHeader (Ledger.Crypto ledgerera)) ledgerera
+                   -> [Tx era]
+getShelleyBlockTxs era (Ledger.Block _header txs) =
+  [ ShelleyTx era txinblock
+  | txinblock <- toList (Ledger.fromTxSeq txs) ]
+
+obtainConsensusShelleyBasedEra
+  :: forall era ledgerera a.
+     ledgerera ~ ShelleyLedgerEra era
+  => ShelleyBasedEra era
+  -> (Consensus.ShelleyBasedEra ledgerera => a) -> a
+obtainConsensusShelleyBasedEra ShelleyBasedEraShelley f = f
+obtainConsensusShelleyBasedEra ShelleyBasedEraAllegra f = f
+obtainConsensusShelleyBasedEra ShelleyBasedEraMary    f = f
+obtainConsensusShelleyBasedEra ShelleyBasedEraAlonzo  f = f
+obtainConsensusShelleyBasedEra ShelleyBasedEraBabbage _f =
+  error "TODO: Babbage era - depends on consensus exposing a babbage era"
+
 
 -- ----------------------------------------------------------------------------
 -- Block in a consensus mode
@@ -163,10 +200,9 @@ getBlockTxs (ShelleyBlock shelleyEra Consensus.ShelleyBlock{Consensus.shelleyBlo
 -- different block types for all the eras. It is used in the ChainSync protocol.
 --
 data BlockInMode mode where
-     BlockInMode :: Block era -> EraInMode era mode -> BlockInMode mode
+     BlockInMode :: IsCardanoEra era => Block era -> EraInMode era mode -> BlockInMode mode
 
 deriving instance Show (BlockInMode mode)
-
 
 fromConsensusBlock :: ConsensusBlockForMode mode ~ block
                    => ConsensusMode mode -> block -> BlockInMode mode
@@ -198,6 +234,27 @@ fromConsensusBlock CardanoMode =
         BlockInMode (ShelleyBlock ShelleyBasedEraMary b')
                      MaryEraInCardanoMode
 
+      Consensus.BlockAlonzo b' ->
+        BlockInMode (ShelleyBlock ShelleyBasedEraAlonzo b')
+                     AlonzoEraInCardanoMode
+
+toConsensusBlock :: ConsensusBlockForMode mode ~ block => BlockInMode mode -> block
+toConsensusBlock bInMode =
+  case bInMode of
+    -- Byron mode
+    BlockInMode (ByronBlock b') ByronEraInByronMode -> Consensus.DegenBlock b'
+
+    -- Shelley mode
+    BlockInMode (ShelleyBlock ShelleyBasedEraShelley b') ShelleyEraInShelleyMode -> Consensus.DegenBlock b'
+
+    -- Cardano mode
+    BlockInMode (ByronBlock b') ByronEraInCardanoMode -> Consensus.BlockByron b'
+    BlockInMode (ShelleyBlock ShelleyBasedEraShelley b') ShelleyEraInCardanoMode -> Consensus.BlockShelley b'
+    BlockInMode (ShelleyBlock ShelleyBasedEraAllegra b') AllegraEraInCardanoMode -> Consensus.BlockAllegra b'
+    BlockInMode (ShelleyBlock ShelleyBasedEraMary b') MaryEraInCardanoMode -> Consensus.BlockMary b'
+    BlockInMode (ShelleyBlock ShelleyBasedEraAlonzo b') AlonzoEraInCardanoMode -> Consensus.BlockAlonzo b'
+    BlockInMode (ShelleyBlock ShelleyBasedEraBabbage _b') BabbageEraInCardanoMode ->
+      error "TODO: Babbage era - depends on consensus exposing a babbage era"
 
 -- ----------------------------------------------------------------------------
 -- Block headers
@@ -212,6 +269,10 @@ data BlockHeader = BlockHeader !SlotNo
 -- representation.
 newtype instance Hash BlockHeader = HeaderHash SBS.ShortByteString
   deriving (Eq, Ord, Show)
+  deriving (ToJSON, FromJSON) via UsingRawBytesHex (Hash BlockHeader)
+  deriving IsString via UsingRawBytesHex (Hash BlockHeader)
+
+
 
 instance SerialiseAsRawBytes (Hash BlockHeader) where
     serialiseToRawBytes (HeaderHash bs) = SBS.fromShort bs
@@ -229,13 +290,16 @@ getBlockHeader (ShelleyBlock shelleyEra block) = case shelleyEra of
   ShelleyBasedEraShelley -> go
   ShelleyBasedEraAllegra -> go
   ShelleyBasedEraMary -> go
+  ShelleyBasedEraAlonzo -> go
+  ShelleyBasedEraBabbage ->
+    error "TODO: Babbage era - depends on consensus exposing a babbage era"
   where
     go :: Consensus.ShelleyBasedEra (ShelleyLedgerEra era) => BlockHeader
     go = BlockHeader headerFieldSlot (HeaderHash hashSBS) headerFieldBlockNo
       where
         Consensus.HeaderFields {
             Consensus.headerFieldHash
-              = Consensus.ShelleyHash (Shelley.HashHeader (Cardano.Crypto.Hash.Class.UnsafeHash hashSBS)),
+              = Consensus.ShelleyHash (TPraos.HashHeader (Cardano.Crypto.Hash.Class.UnsafeHash hashSBS)),
             Consensus.headerFieldSlot,
             Consensus.headerFieldBlockNo
           } = Consensus.getHeaderFields block
@@ -321,6 +385,14 @@ fromConsensusPoint (Consensus.BlockPoint slot h) =
     proxy :: Proxy (Consensus.ShelleyBlock ledgerera)
     proxy = Proxy
 
+chainPointToSlotNo :: ChainPoint -> Maybe SlotNo
+chainPointToSlotNo ChainPointAtGenesis = Nothing
+chainPointToSlotNo (ChainPoint slotNo _) = Just slotNo
+
+chainPointToHeaderHash :: ChainPoint -> Maybe (Hash BlockHeader)
+chainPointToHeaderHash ChainPointAtGenesis = Nothing
+chainPointToHeaderHash (ChainPoint _ blockHeader) = Just blockHeader
+
 
 -- ----------------------------------------------------------------------------
 -- Chain tips
@@ -347,6 +419,12 @@ chainTipToChainPoint :: ChainTip -> ChainPoint
 chainTipToChainPoint ChainTipAtGenesis = ChainPointAtGenesis
 chainTipToChainPoint (ChainTip s h _)  = ChainPoint s h
 
+makeChainTip :: WithOrigin BlockNo -> ChainPoint -> ChainTip
+makeChainTip woBlockNo chainPoint = case woBlockNo of
+  Origin -> ChainTipAtGenesis
+  At blockNo -> case chainPoint of
+    ChainPointAtGenesis -> ChainTipAtGenesis
+    ChainPoint slotNo headerHash -> ChainTip slotNo headerHash blockNo
 
 fromConsensusTip  :: ConsensusBlockForMode mode ~ block
                   => ConsensusMode mode
@@ -394,4 +472,3 @@ fromConsensusTip =
     conv TipGenesis                      = ChainTipAtGenesis
     conv (Tip slot (OneEraHash h) block) = ChainTip slot (HeaderHash h) block
 -}
-

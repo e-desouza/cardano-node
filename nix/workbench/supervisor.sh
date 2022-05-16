@@ -1,17 +1,16 @@
-set -euo pipefail
-
-. $(dirname "$0")/lib.sh
-
 usage_supervisor() {
      usage "supervisor" "Backend:  manages a local cluster using 'supervisord'" <<EOF
-    is-running       Test if 'supervisord' is running
 
-    get-node-socket-path STATE-DIR
-                     Given a state dir, print the default node socket path
-                       for 'cardano-cli'
+    Please see documentation for 'wb backend' for the supported commands.
+
+    Supervisor-specific:
+
+    save-child-pids RUN-DIR
+    save-pid-maps RUN-DIR
 EOF
 }
 
+backend_supervisor() {
 op=${1:?$(usage_supervisor)}; shift
 
 case "$op" in
@@ -19,48 +18,39 @@ case "$op" in
         echo 'supervisor';;
 
     is-running )
-        test "$(sleep 0.5s; netstat -pltn 2>/dev/null | grep ':9001 ' | wc -l)" != "0"
+        test "$(sleep 0.5s; netstat -pltn 2>/dev/null | grep ':9001 ' | wc -l)" != "0";;
+
+    setenv-defaults )
+        local usage="USAGE: wb supervisor $op PROFILE-DIR"
+        local profile_dir=${1:?$usage}
+
+        setenvjq    'port_shift_ekg'        100
+        setenvjq    'port_shift_prometheus' 200
+        setenvjqstr 'supervisor_conf'      "$profile_dir"/supervisor.conf
         ;;
 
-    get-node-socket-path )
-        usage="USAGE: wb supervisor $op STATE-DIR"
-        state_dir=${1:?$usage}
+    allocate-run )
+        local usage="USAGE: wb supervisor $op RUN-DIR"
+        local dir=${1:?$usage}; shift
 
-        echo -n $state_dir/node-0/node.socket
-        ;;
-
-    record-extended-env-config )
-        usage="USAGE: wb supervisor $op ENV-JSON [ENV-CONFIG-OPTS..]"
-        env_json=${1:?$usage}
-
-               port_shift_ekg=200
-        port_shift_prometheus=300
         while test $# -gt 0
         do case "$1" in
-               --port-shift-ekg )        port_shift_ekg=$2; shift;;
-               --port-shift-prometheus ) port_shift_prometheus=$2; shift;;
                --* ) msg "FATAL:  unknown flag '$1'"; usage_supervisor;;
                * ) break;; esac; shift; done
 
-        env_json="$env_json"
-        args=(
-            --argjson port_shift_ekg        "$port_shift_ekg"
-            --argjson port_shift_prometheus "$port_shift_prometheus"
-        )
-        jq_fmutate "$env_json" '. *
-          { port_shift_ekg:        $port_shift_ekg
-          , port_shift_prometheus: $port_shift_prometheus
-          }
-        ' "${args[@]}"
+        local supervisor_conf=$(envjqr 'supervisor_conf')
+
+        mkdir -p               "$dir"/supervisor
+        cp -f $supervisor_conf "$dir"/supervisor/supervisord.conf
         ;;
 
     describe-run )
-        usage="USAGE: wb supervisor $op RUN-DIR"
-        dir=${1:?$usage}
+        local usage="USAGE: wb supervisor $op RUN-DIR"
+        local dir=${1:?$usage}
 
-        basePort=$(jq .basePort "$dir"/env.json)
-        port_ekg=$((       basePort+$(jq .port_shift_ekg        "$dir"/env.json)))
-        port_prometheus=$((basePort+$(jq .port_shift_prometheus "$dir"/env.json)))
+        local basePort=$(                   envjq 'basePort')
+        local port_ekg=$((       basePort+$(envjq 'port_shift_ekg')))
+        local port_prometheus=$((basePort+$(envjq 'port_shift_prometheus')))
 
         cat <<EOF
   - EKG URL (node-0):        http://localhost:$port_ekg/
@@ -68,47 +58,123 @@ case "$op" in
 EOF
         ;;
 
-    pre-run-hook )
-        usage="USAGE: wb supervisor $op RUN-DIR"
-        dir=${1:?$usage}
+    start-cluster )
+        local usage="USAGE: wb supervisor $op RUN-DIR"
+        local dir=${1:?$usage}; shift
 
-        wb backend assert-stopped
-
-        if test -e "$dir" -a ! -L "$dir"
-        then echo "workbench ERROR:  state directory exists, but is not a symlink -- please remove it or choose another:  $dir"; exit 1; fi
-        ;;
-
-    start-run )
-        usage="USAGE: wb supervisor $op RUN-DIR"
-        dir=${1:?$usage}; shift
-
-        supervisorConf=
-        while test $# -gt 0
-        do case "$1" in
-               --supervisor-conf ) supervisorConf=$2; shift;;
-               --* ) msg "FATAL:  unknown flag '$1'"; usage_supervisor;;
-               * ) break;; esac; shift; done
-
-        test -r "$supervisorConf" ||
-            fatal "supervisor start-run requires the --supervisor-conf FILE option."
-
-        mkdir -p              "$dir"/supervisor
-        cp -f $supervisorConf "$dir"/supervisor/supervisord.conf
         supervisord --config  "$dir"/supervisor/supervisord.conf $@
 
         if test ! -v CARDANO_NODE_SOCKET_PATH
-        then export  CARDANO_NODE_SOCKET_PATH=$($0 get-node-socket-path "$dir")
+        then export  CARDANO_NODE_SOCKET_PATH=$(backend_supervisor get-node-socket-path "$dir")
         fi
-        while test ! -S $CARDANO_NODE_SOCKET_PATH
-        do msg "supervisor:  waiting 5 seconds for $CARDANO_NODE_SOCKET_PATH to appear.."
-           sleep 5
-        done
 
-        msg "supervisor:  pid file:  $dir/supervisor/supervisord.pid"
-        pstree -Ap "$(cat "$dir"/supervisor/supervisord.pid)" |
-            grep 'cabal.*cardano-node' |
-            sed -e 's/^.*-+-{\?cardano-node}\?(\([0-9]*\))$/\1/' \
-                > "$dir"/supervisor/cardano-node.pids
+        local patience=$(jq '.analysis.cluster_startup_overhead_s | ceil' $dir/profile.json) i=0
+        echo -n "workbench:  supervisor:  waiting ${patience}s for $CARDANO_NODE_SOCKET_PATH to appear: " >&2
+        while test ! -S $CARDANO_NODE_SOCKET_PATH
+        do printf "%3d" $i; sleep 1
+           i=$((i+1))
+           if test $i -ge $patience
+           then echo
+                msg "FATAL:  workbench:  supervisor:  patience ran out after ${patience}s"
+                backend_supervisor stop-cluster "$dir"
+                fatal "node startup did not succeed:  check logs in $dir/node-0/stdout"
+           fi
+           echo -ne "\b\b\b"
+        done >&2
+        echo " node-0 online after $i seconds" >&2
+
+        backend_supervisor save-child-pids "$dir"
+        backend_supervisor save-pid-maps "$dir";;
+
+    get-node-socket-path )
+        local usage="USAGE: wb supervisor $op STATE-DIR"
+        local state_dir=${1:?$usage}
+
+        echo -n $state_dir/node-0/node.socket
+        ;;
+
+    start-generator )
+        local usage="USAGE: wb supervisor $op RUN-DIR"
+        local dir=${1:?$usage}; shift
+
+        while test $# -gt 0
+        do case "$1" in
+               --* ) msg "FATAL:  unknown flag '$1'"; usage_supervisor;;
+               * ) break;; esac; shift; done
+
+        supervisorctl start generator
+        backend_supervisor save-child-pids "$dir";;
+
+    wait-pools-stopped )
+        local usage="USAGE: wb supervisor $op RUN-DIR"
+        local dir=${1:?$usage}; shift
+
+        local i=0 pools=$(jq .composition.n_pool_hosts $dir/profile.json)
+        msg_ne "supervisor:  waiting until all pool nodes are stopped: 000000"
+        touch $dir/flag/cluster-termination
+        for ((pool_ix=0; pool_ix < $pools; pool_ix++))
+        do while supervisorctl status node-${pool_ix} > /dev/null &&
+                   test -f $dir/flag/cluster-termination
+           do echo -ne "\b\b\b\b\b\b"; printf "%6d" $i;          i=$((i+1)); sleep 1; done
+              echo -ne "\b\b\b\b\b\b"; echo -n "node-${pool_ix} 000000"
+        done >&2
+        if test -f $dir/flag/cluster-termination
+        then echo " done." >&2
+        else echo " termination requested." >&2; fi
+        ;;
+
+    stop-cluster )
+        local usage="USAGE: wb supervisor $op RUN-DIR"
+        local dir=${1:?$usage}; shift
+
+        supervisorctl stop all
+
+        if test -f "${dir}/supervisor/supervisord.pid"
+        then kill $(<${dir}/supervisor/supervisord.pid) $(<${dir}/supervisor/child.pids) 2>/dev/null
+        else pkill supervisord
+        fi
+        ;;
+
+    cleanup-cluster )
+        local usage="USAGE: wb supervisor $op RUN-DIR"
+        local dir=${1:?$usage}; shift
+
+        msg "supervisor:  resetting cluster state in:  $dir"
+        rm -f $dir/*/std{out,err} $dir/node-*/*.socket $dir/*/logs/* 2>/dev/null || true
+        rm -fr $dir/node-*/state-cluster/;;
+
+    save-child-pids )
+        local usage="USAGE: wb supervisor $op RUN-DIR"
+        local dir=${1:?$usage}; shift
+
+        local svpid=$dir/supervisor/supervisord.pid
+        local pstree=$dir/supervisor/ps.tree
+        pstree -p "$(cat "$svpid")" > "$pstree"
+
+        local pidsfile="$dir"/supervisor/child.pids
+        { grep '\\---\|--=' "$pstree" || true; } |
+            sed 's/^.*\\--- \([0-9]*\) .*/\1/; s/^[ ]*[^ ]* \([0-9]+\) .*/\1/
+                ' > "$pidsfile"
+        ;;
+
+    save-pid-maps )
+        local usage="USAGE: wb supervisor $op RUN-DIR"
+        local dir=${1:?$usage}; shift
+
+        local mapn2p=$dir/supervisor/node2pid.map; echo '{}' > "$mapn2p"
+        local mapp2n=$dir/supervisor/pid2node.map; echo '{}' > "$mapp2n"
+        local pstree=$dir/supervisor/ps.tree
+        for node in $(jq_tolist keys "$dir"/node-specs.json)
+        do local service_pid=$(supervisorctl pid $node)
+           if test -z "$(ps h --ppid $service_pid)"
+           then local pid=$service_pid
+           else local pid=$(fgrep -e "= $(printf %05d $service_pid) " -A1 "$pstree" |
+                                tail -n1 | sed 's/^.*\\--- \([0-9]*\) .*/\1/; s/^[ ]*[^ ]* \([0-9]*\) .*/\1/')
+           fi
+           jq_fmutate "$mapn2p" '. * { "'$node'": '$pid' }'
+           jq_fmutate "$mapp2n" '. * { "'$pid'": "'$node'" }'
+        done
         ;;
 
     * ) usage_supervisor;; esac
+}

@@ -12,19 +12,20 @@ let
         {
           services.cardano-submit-api = {
             network = mkDefault envConfig.name;
-            cardanoNodePkgs = mkDefault pkgs;
           };
         }
       ];
     };
 
-  in pkgs.writeScript "cardano-submit-api-${service.network}" ''
+  in pkgs.writeScriptBin "cardano-submit-api-${service.network}" ''
     #!${pkgs.runtimeShell}
     set -euo pipefail
     ${service.script} $@
-  '';
+  '' // {
+    passthru = { inherit service; };
+  };
 
   scripts = forEnvironments (environment: recurseIntoAttrs {
     submit-api = mkScript environment;
   });
-in removeAttrs scripts ["selfnode" "shelley_selfnode"]
+in scripts

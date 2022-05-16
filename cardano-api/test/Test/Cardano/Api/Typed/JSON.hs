@@ -1,23 +1,30 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
+
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module Test.Cardano.Api.Typed.JSON
   ( tests
   ) where
 
-import           Cardano.Api
 import           Cardano.Prelude
 
-import           Data.Aeson
-
-import           Hedgehog (Gen, Property, discover, forAll, tripping)
+import           Data.Aeson (eitherDecode, encode)
+import           Hedgehog (Property, forAll, tripping)
 import qualified Hedgehog as H
 import qualified Hedgehog.Gen as Gen
 import           Test.Tasty (TestTree)
-import           Test.Tasty.Hedgehog.Group (fromGroup)
+import           Test.Tasty.Hedgehog (testProperty)
+import           Test.Tasty.TH (testGroupGenerator)
 
-import           Test.Cardano.Api.Typed.Gen
+import           Gen.Cardano.Api.Typed (genMaybePraosNonce, genProtocolParameters)
 
+import           Test.Cardano.Api.Typed.Orphans ()
 
 {- HLINT ignore "Use camelCase" -}
 
@@ -31,20 +38,7 @@ prop_roundtrip_protocol_parameters_JSON = H.property $ do
   pp <- forAll genProtocolParameters
   tripping pp encode eitherDecode
 
-
--- -----------------------------------------------------------------------------
-
-roundtrip_CBOR
-  :: (SerialiseAsCBOR a, Eq a, Show a)
-  => AsType a -> Gen a -> Property
-roundtrip_CBOR typeProxy gen =
-  H.property $ do
-    val <- H.forAll gen
-    H.tripping val serialiseToCBOR (deserialiseFromCBOR typeProxy)
-
-
-
 -- -----------------------------------------------------------------------------
 
 tests :: TestTree
-tests = fromGroup $$discover
+tests = $testGroupGenerator
